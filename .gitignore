@@ -1,0 +1,14 @@
+# --- data (not tracked; supplied locally) ---
+caiso-data/
+app/data/derived/
+app/.cache/
+
+# --- python env / caches ---
+app/.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# --- os / editor ---
+.DS_Store
+*.log
