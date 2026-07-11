@@ -1,5 +1,6 @@
 # --- data (not tracked; supplied locally) ---
-caiso-data/
+# keep the caiso-data/ folder + its README placeholder, ignore the actual data files
+caiso-data/*.parquet
 app/data/derived/
 app/.cache/
 
