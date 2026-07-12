@@ -400,10 +400,10 @@ meta = dict(
     reident_candidate_bidders=int(mdf["res"].nunique()) if len(mdf) else 0,
     reident_highconf_links=n_unique,
     assumptions=[
-        "No LMP/clearing price in source data; system tightness proxied by hourly forced-outage MW.",
-        "No fuel/heat-rate data; withholding uses a self-referential statistical benchmark (tight vs. normal behavior).",
-        "Null-ended forced outages treated as 1-hour (empirical median duration).",
-        "Bid curve = (MW, price) points, price non-decreasing; offered cap = max MW.",
+        "The data doesn't include actual electricity prices, so we use hourly power-plant outages as a stand-in for how short the grid was.",
+        "There's no fuel-cost data, so 'holding back power' is judged by comparing each plant to its own behavior in short vs. normal hours — not against what the power actually cost to make.",
+        "When a forced outage has no recorded end time, we treat it as lasting one hour (the typical length).",
+        "Each offer is a set of (amount, price) steps with prices that only go up; a plant's 'capacity' is the largest amount it offered.",
     ],
 )
 with open(f"{OUT}/meta.json","w") as f:
