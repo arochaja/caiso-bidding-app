@@ -325,12 +325,14 @@ span_last  = {b.res: pd.Timestamp(b.last_day).date()  for b in bidder.itertuples
 # Plant: fraction of PMAX curtailed each day (forced OR planned), max concurrent.
 oc = con.execute("select rid, ostart, oend, cmw, pmax from outg_reid where pmax > 0").fetchdf()
 res_curt_frac = defaultdict(dict)   # rid -> {day: curtailed_fraction in (0,1]}
+res_curt_mw   = defaultdict(dict)   # rid -> {day: max concurrent curtailment MW}  (for hover)
 for rid, s, e, cmw, pmax in oc.itertuples(index=False):
-    f = min(1.0, (float(cmw) if cmw is not None else 0.0) / pmax) if pmax else 0.0
-    if f <= 0:
-        continue
+    mw = float(cmw) if cmw is not None else 0.0
+    f = min(1.0, mw / pmax) if pmax else 0.0
     for d in pd.date_range(pd.Timestamp(s).normalize(), pd.Timestamp(e).normalize(), freq="D"):
         dd = d.date()
+        if mw > res_curt_mw[rid].get(dd, -1.0):
+            res_curt_mw[rid][dd] = mw
         if f > res_curt_frac[rid].get(dd, 0.0):
             res_curt_frac[rid][dd] = f
 
@@ -463,6 +465,20 @@ mdf_combined.to_parquet(f"{OUT}/reident_matches_combined.parquet", index=False)
 mdf_magnitude.to_parquet(f"{OUT}/reident_matches_magnitude.parquet", index=False)
 bidder.to_parquet(f"{OUT}/bidder_profiles.parquet", index=False)
 
+# hourly offered-capacity series for the drill-down (matched bidders only), so the
+# chart can show hour-level break points instead of daily maxes.
+matched_res = set()
+for mdf in (mdf_forced, mdf_combined, mdf_magnitude):
+    if len(mdf):
+        matched_res |= set(mdf[mdf["rank"] == 1]["res"].unique())
+mres_df = pd.DataFrame({"res": sorted(matched_res)})
+con.register("mres_df", mres_df)
+con.execute(f"""
+copy (select r.res, r.h, r.cap from rh r join mres_df using (res) order by r.res, r.h)
+to '{OUT}/bidder_hourly_cap.parquet' (format parquet)
+""")
+log(f"  hourly cap series written for {len(matched_res):,} matched bidders")
+
 def highconf(mdf):
     if not len(mdf): return 0
     return int((mdf[mdf["rank"]==1]["confidence"] >= 0.6).sum())
@@ -479,13 +495,16 @@ for mdf in (mdf_forced, mdf_combined, mdf_magnitude):
         cand_ids |= set(mdf["cand_rid"].unique())
 rod = []
 for rid in cand_ids:
+    pmax = res_meta.get(rid, {}).get("pmax")
+    mwd  = res_curt_mw.get(rid, {})
     fdays = res_days_forced.get(rid, set())
     pdays = res_days_planned.get(rid, set())
     for d in sorted(fdays):
-        rod.append((rid, d, "forced"))
+        rod.append((rid, d, "forced", mwd.get(d), pmax))
     for d in sorted(pdays - fdays):
-        rod.append((rid, d, "planned"))
-pd.DataFrame(rod, columns=["rid","day","kind"]).to_parquet(f"{OUT}/resource_outage_daily.parquet", index=False)
+        rod.append((rid, d, "planned", mwd.get(d), pmax))
+pd.DataFrame(rod, columns=["rid","day","kind","curt_mw","pmax"]).to_parquet(
+    f"{OUT}/resource_outage_daily.parquet", index=False)
 
 # =====================================================================
 # meta.json

@@ -431,54 +431,80 @@ We score the timing overlap with a standard statistic — the **Matthews correla
             tone="critical" if link["phi"] > 0.6 else "serious")
     kpi(k[4], "Overall confidence", f'{link["confidence"]:.0%}', tone="critical")
 
-    bday = load("bidder_daily_cap.parquet")
-    bd = bday[bday["res"] == sel].copy()
-    bd["day"] = pd.to_datetime(bd["day"])
-    bd = bd.sort_values("day")
-    ref = bd["cap"].median()
+    bhr = load("bidder_hourly_cap.parquet")
+    bd = bhr[bhr["res"] == sel].copy()
+    bd["h"] = pd.to_datetime(bd["h"])
+    bd = bd.sort_values("h")
+
+    gran = st.radio("Break points", ["Hourly", "Daily"], index=0, horizontal=True,
+                    key="reid_granularity",
+                    help="Hourly shows every individual offer submission; Daily shows each day's peak offer.")
+    if gran == "Daily":
+        agg = bd.assign(day=bd["h"].dt.floor("D")).groupby("day", as_index=False)["cap"].max()
+        xvals, yvals = agg["day"], agg["cap"]
+        line_hover = "%{x|%b %d}: %{y:.1f} MW (day's peak offer)<extra></extra>"
+        mk_size = 4
+    else:
+        xvals, yvals = bd["h"], bd["cap"]
+        line_hover = "%{x|%b %d, %H:%M}: %{y:.1f} MW offered<extra></extra>"
+        mk_size = 3
+
+    if len(yvals):
+        ref = float(yvals.median())
+        y0, y1 = float(yvals.min()), float(yvals.max())
+    else:
+        ref, y0, y1 = 0.0, 0.0, 1.0
+    pad = max(0.5, (y1 - y0) * 0.08)
+    y0, y1 = y0 - pad, y1 + pad
+    DAY_MS = 86400000  # 1 day width for the outage bars
 
     fig = go.Figure()
-    # shade the matched plant's outage days: forced = red, planned = amber.
-    # (No per-band labels — they'd stack into clutter; legend swatches + caption explain.)
-    FORCED_FILL, PLANNED_FILL = "rgba(208,59,59,0.14)", "rgba(237,161,0,0.18)"
+
+    # matched plant's outage days as HOVERABLE bars (full height): forced=red,
+    # planned=amber. Hover shows the day's curtailment in MW and % of PMAX.
     n_forced = n_planned = 0
+    def outage_bars(df, color, name, kindlabel):
+        if not len(df): return
+        pct = (df["curt_mw"] / df["pmax"] * 100).where(df["pmax"] > 0)
+        cust = [[mw, p] for mw, p in zip(df["curt_mw"].fillna(0), pct.fillna(-1))]
+        fig.add_trace(go.Bar(
+            x=df["day"], y=[y1 - y0] * len(df), base=y0, width=DAY_MS,
+            marker=dict(color=color, line=dict(width=0)), name=name,
+            customdata=cust,
+            hovertemplate=("%{x|%b %d, %Y}<br>" + kindlabel +
+                           " outage<br>Curtailed: %{customdata[0]:.0f} MW"
+                           " (%{customdata[1]:.0f}% of PMAX)<extra></extra>")))
     if have("resource_outage_daily.parquet"):
         rod = load("resource_outage_daily.parquet")
         od = rod[rod["rid"] == link["cand_rid"]].copy()
         od["day"] = pd.to_datetime(od["day"])
-        forced_days  = od[od["kind"] == "forced"]["day"]
-        planned_days = od[od["kind"] == "planned"]["day"] if use_planned else od.iloc[0:0]["day"]
-        for dday in forced_days:
-            fig.add_vrect(x0=dday - pd.Timedelta(hours=12), x1=dday + pd.Timedelta(hours=12),
-                          fillcolor=FORCED_FILL, line_width=0, layer="below")
-        for dday in planned_days:
-            fig.add_vrect(x0=dday - pd.Timedelta(hours=12), x1=dday + pd.Timedelta(hours=12),
-                          fillcolor=PLANNED_FILL, line_width=0, layer="below")
-        n_forced, n_planned = len(forced_days), len(planned_days)
+        forced  = od[od["kind"] == "forced"]
+        planned = od[od["kind"] == "planned"] if use_planned else od.iloc[0:0]
+        outage_bars(forced,  "rgba(208,59,59,0.22)", "Matched plant — forced outage", "Forced")
+        outage_bars(planned, "rgba(237,161,0,0.26)", "Matched plant — planned outage", "Planned")
+        n_forced, n_planned = len(forced), len(planned)
+
+    # bidder's offered capacity — hourly break points, or daily peak (toggle above)
     fig.add_trace(go.Scatter(
-        x=bd["day"], y=bd["cap"], mode="lines+markers", name="Anonymous bidder — peak power offered",
-        line=dict(color=BLUE, width=1.6),
-        marker=dict(size=4, color=BLUE, line=dict(width=0.5, color="white")),
-        hovertemplate="%{x|%b %d}: %{y:.1f} MW (day's peak offer)<extra></extra>"))
-    # invisible proxy traces so the shaded bands get clean legend entries
-    if n_forced:
-        fig.add_trace(go.Scatter(
-            x=[None], y=[None], mode="markers", name="Matched plant — forced outage",
-            marker=dict(size=12, symbol="square", color="rgba(208,59,59,0.35)"), hoverinfo="skip"))
-    if n_planned:
-        fig.add_trace(go.Scatter(
-            x=[None], y=[None], mode="markers", name="Matched plant — planned outage",
-            marker=dict(size=12, symbol="square", color="rgba(237,161,0,0.5)"), hoverinfo="skip"))
+        x=xvals, y=yvals, mode="lines+markers", name="Anonymous bidder — offered capacity",
+        line=dict(color=BLUE, width=1.3),
+        marker=dict(size=mk_size, color=BLUE, line=dict(width=0)),
+        hovertemplate=line_hover))
     fig.add_hline(y=ref, line=dict(color=MUTED, width=1, dash="dot"),
-                  annotation_text="typical peak", annotation_font_size=10, annotation_font_color=MUTED)
-    style(fig, height=380, ytitle="peak power offered that day (MW)")
-    _dots = " Each blue dot is a day the bidder actually submitted an offer; gaps between dots are days with no entry."
+                  annotation_text="typical", annotation_font_size=10, annotation_font_color=MUTED)
+    fig.update_layout(bargap=0)
+    style(fig, height=380, ytitle="offered capacity (MW)")
+    fig.update_yaxes(range=[y0, y1])
+    _dots = ((" Each blue dot is one hour the bidder submitted an offer; gaps are hours with no entry."
+              if gran == "Hourly" else
+              " Each blue dot is a day the bidder submitted offers (its peak that day); gaps are days with no entry.")
+             + " Hover an outage band to see how many MW the plant was curtailed.")
     if use_planned:
         st.caption("🟥 Red = forced (unexpected) outages · 🟧 Amber = planned (scheduled) outages. "
-                   "The anonymous bidder's offered power vanishes on those same days — that lined-up pattern is the fingerprint." + _dots)
+                   "The bidder's offered capacity drops on those same days — that lined-up pattern is the fingerprint." + _dots)
     else:
         st.caption("🟥 Red bands mark days the matched real plant was on a forced (unexpected) outage. "
-                   "The anonymous bidder's offered power vanishes on those same days — that lined-up pattern is the fingerprint." + _dots)
+                   "The bidder's offered capacity drops on those same days — that lined-up pattern is the fingerprint." + _dots)
     st.plotly_chart(fig, use_container_width=True)
 
     with st.expander("See every candidate match (and download the data)"):
