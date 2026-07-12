@@ -10,7 +10,7 @@ if [ ! -x "$PY" ]; then
   echo "Creating virtualenv + installing deps..."
   python3 -m venv .venv
   .venv/bin/python -m pip install --quiet --upgrade pip
-  .venv/bin/python -m pip install --quiet duckdb pandas pyarrow streamlit plotly
+  .venv/bin/python -m pip install --quiet -r requirements.txt
 fi
 
 if [ "${1:-}" == "--rebuild" ] || [ ! -f data/derived/meta.json ]; then
