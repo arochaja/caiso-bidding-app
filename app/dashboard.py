@@ -15,6 +15,7 @@ import os, json
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
+from auth import require_login
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DER  = os.path.join(HERE, "data", "derived")
@@ -42,6 +43,11 @@ def product_label(code):
 
 st.set_page_config(page_title="CAISO Market Surveillance", page_icon="⚡",
                    layout="wide", initial_sidebar_state="expanded")
+
+# ---------- authentication ----------
+# Blocks all rendering below until a valid shared username/password is entered.
+# Credentials come from Streamlit secrets ([auth] section); see auth.py.
+require_login()
 
 # ---------- data loading ----------
 # Cache key includes the file's mtime, so regenerating derived data (e.g. re-running

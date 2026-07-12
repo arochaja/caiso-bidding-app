@@ -1,0 +1,29 @@
+{
+  "generated_scope": "CAISO RTM 2025 (full year)",
+  "n_bid_rows": 69278338,
+  "n_resources": 2445,
+  "date_min": "2025-01-01",
+  "date_max": "2025-12-31",
+  "thresholds": {
+    "elevated_price": 250.0,
+    "nearcap_price": 900.0,
+    "tight_percentile": 0.9,
+    "tight_mw": 15662.7,
+    "cap_tolerance_pct": 12.0,
+    "min_tight_hours": 200
+  },
+  "withholding_scored": 1262,
+  "reident_candidate_bidders": 324,
+  "reident_candidate_bidders_combined": 339,
+  "reident_candidate_bidders_magnitude": 469,
+  "reident_highconf_links": 232,
+  "reident_highconf_links_combined": 250,
+  "reident_highconf_links_magnitude": 179,
+  "assumptions": [
+    "The data doesn't include actual electricity prices, so we use hourly power-plant outages as a stand-in for how short the grid was.",
+    "There's no fuel-cost data, so 'holding back power' is judged by comparing each plant to its own behavior in short vs. normal hours \u2014 not against what the power actually cost to make.",
+    "When a forced outage has no recorded end time, we treat it as lasting one hour (the typical length).",
+    "Each offer is a set of (amount, price) steps with prices that only go up; a plant's 'capacity' is the largest amount it offered.",
+    "Unmasking (Screen 2) matches a bidder's quiet days against a plant's outage days; you can compare three methods \u2014 forced outages only, forced + planned, or magnitude-aware (which also correlates the size of partial curtailments against how much the bidder scaled back its offers). The 'grid is short' scarcity measure (Screen 1) always uses forced outages only."
+  ]
+}

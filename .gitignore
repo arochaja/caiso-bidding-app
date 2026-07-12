@@ -1,8 +1,12 @@
 # --- data (not tracked; supplied locally) ---
 # keep the caiso-data/ folder + its README placeholder, ignore the actual data files
 caiso-data/*.parquet
-app/data/derived/
+# NOTE: app/data/derived/ IS committed so the deployed app has its data.
+# (It's small, pre-aggregated output — the large raw caiso-data/ stays ignored.)
 app/.cache/
+
+# --- secrets (login credentials) ---
+app/.streamlit/secrets.toml
 
 # --- python env / caches ---
 app/.venv/
