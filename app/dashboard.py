@@ -44,14 +44,24 @@ st.set_page_config(page_title="CAISO Market Surveillance", page_icon="⚡",
                    layout="wide", initial_sidebar_state="expanded")
 
 # ---------- data loading ----------
+# Cache key includes the file's mtime, so regenerating derived data (e.g. re-running
+# pipeline.py) automatically busts the cache instead of serving a stale schema.
 @st.cache_data(show_spinner=False)
+def _read_parquet(path, _mtime):
+    return pd.read_parquet(path)
+
 def load(name):
-    return pd.read_parquet(os.path.join(DER, name))
+    p = os.path.join(DER, name)
+    return _read_parquet(p, os.path.getmtime(p))
 
 @st.cache_data(show_spinner=False)
-def load_meta():
-    with open(os.path.join(DER, "meta.json")) as f:
+def _read_meta(path, _mtime):
+    with open(path) as f:
         return json.load(f)
+
+def load_meta():
+    p = os.path.join(DER, "meta.json")
+    return _read_meta(p, os.path.getmtime(p))
 
 def have(name):
     return os.path.exists(os.path.join(DER, name))
@@ -326,20 +336,46 @@ elif PAGE == "Screen 2 · Unmasking bidders":
 Anonymous bidders have ID numbers, not names. But two public facts can give them away:
 
 1. **Size clue.** Every bidder has a maximum amount of power it offers. Real named plants publish their maximum capacity (called **PMAX**). If a bidder's ceiling matches a named plant's capacity within **±{t['cap_tolerance_pct']:.0f}%**, that plant becomes a candidate.
-2. **Timing clue.** When a plant breaks down (a *forced outage*) it stops bidding. We build each anonymous bidder's calendar of "went-quiet" days and compare it to each named plant's outage calendar. When the two calendars line up unusually well, that's a fingerprint.
+2. **Timing clue.** When a plant is on an outage it stops bidding. We build each anonymous bidder's calendar of "went-quiet" days and compare it to each named plant's outage calendar. When the two calendars line up unusually well, that's a fingerprint.
 
 We score the timing overlap with a standard statistic — the **Matthews correlation (φ)** — which runs from 0 (no better than chance) to 1 (perfect match). Plants that are always on, or always off, score near 0, so only genuinely *distinctive* patterns count.
 
 **Overall confidence = 60% timing match + 25% size match + 15% same type (battery vs. not).** A high-confidence match is a strong lead worth verifying — not courtroom proof.
+
+**Forced vs. planned outages.** A plant goes quiet during *any* outage — unexpected (**forced**) or scheduled (**planned**). Use the toggle below to match timing against forced outages only, or forced + planned. Adding planned outages stops penalizing a bidder for going quiet during scheduled maintenance, and can surface plants whose 2025 outages were mostly planned.
+
+**Magnitude-aware (partial curtailments).** Most outages aren't full shut-downs — the plant loses only *part* of its capacity, and a bidder on a partial outage offers *proportionally* less. The third method correlates the **size** of a plant's daily curtailment against **how much the bidder scaled back its offers** (a rank correlation, ρ), then blends it in: *confidence = 0.35·timing + 0.30·size-tracking + 0.25·capacity + 0.10·type*. This reaches plants that only ever partially derate — invisible to the on/off methods. Because timing is weighted less here, the three methods are best read as **complementary**, not strictly ranked.
 """)
 
-    if not have("reident_matches.parquet"):
+    if not have("reident_matches_forced.parquet"):
         st.warning("No unmasking results available.")
         st.stop()
 
-    m = load("reident_matches.parquet")
+    mode = st.radio(
+        "Match a bidder's quiet days against…",
+        ["Forced outages only", "Forced + planned outages", "Magnitude-aware (uses partial curtailments)"],
+        index=0, horizontal=True,
+        help="'Forced only' = unexpected breakdowns. 'Forced + planned' also counts scheduled maintenance. "
+             "'Magnitude-aware' additionally correlates the SIZE of partial curtailments against how much the "
+             "bidder scaled back its offers — reaching plants that only ever partially derate.")
+    is_mag = mode.startswith("Magnitude")
+    use_planned = mode != "Forced outages only"   # combined & magnitude both use forced+planned bands
+    fname = ("reident_matches_magnitude.parquet" if is_mag else
+             "reident_matches_combined.parquet" if use_planned else
+             "reident_matches_forced.parquet")
+    m = load(fname)
     r1 = m[m["rank"] == 1].copy()
     prof = load("bidder_profiles.parquet")
+
+    hcf = META.get("reident_highconf_links", 0)
+    hcc = META.get("reident_highconf_links_combined", hcf)
+    hcm = META.get("reident_highconf_links_magnitude", hcf)
+    trio = (f"Confident unmaskings (≥60%) — **forced:** {hcf} · **+planned:** {hcc} · "
+            f"**magnitude-aware:** {hcm}.")
+    st.caption(trio + (
+        " Magnitude-aware reaches a much wider pool (plants that only partially derate), but weights timing "
+        "less — so its count isn't directly comparable; the methods are complementary." if is_mag else
+        " Adding planned outages stops penalizing a bidder for going quiet during scheduled maintenance."))
 
     c = st.columns(4)
     kpi(c[0], "Bidders with a usable pattern", f'{r1["res"].nunique():,}', "have a distinctive went-quiet pattern")
@@ -361,11 +397,14 @@ We score the timing overlap with a standard statistic — the **Matthews correla
 
     with right:
         section("The strongest unmaskings", "Each anonymous bidder → the real plant it most likely is.")
-        show = r1.sort_values("confidence", ascending=False).head(25)[
-            ["res","bidder_cap","cand_name","cand_pmax","cap_diff_pct","phi","overlap_days","confidence"]]
-        show = show.rename(columns={"res":"Anon bidder","bidder_cap":"Offered cap (MW)","cand_name":"Likely real plant",
-                                    "cand_pmax":"Plant capacity (MW)","cap_diff_pct":"Size gap %","phi":"Timing match (φ)",
-                                    "overlap_days":"Matching days","confidence":"Confidence"})
+        cols = ["res","bidder_cap","cand_name","cand_pmax","cap_diff_pct","phi","overlap_days","confidence"]
+        rename = {"res":"Anon bidder","bidder_cap":"Offered cap (MW)","cand_name":"Likely real plant",
+                  "cand_pmax":"Plant capacity (MW)","cap_diff_pct":"Size gap %","phi":"Timing match (φ)",
+                  "overlap_days":"Matching days","confidence":"Confidence"}
+        if is_mag and "rho" in r1.columns:
+            cols.insert(6, "rho")                       # show size-tracking next to timing
+            rename["rho"] = "Size-tracking (ρ)"
+        show = r1.sort_values("confidence", ascending=False).head(25)[cols].rename(columns=rename)
         st.dataframe(show, width='stretch', height=360, hide_index=True)
 
     st.markdown("---")
@@ -373,7 +412,7 @@ We score the timing overlap with a standard statistic — the **Matthews correla
             "The giveaway: an anonymous bidder's offered power drops to nothing on exactly the days its matched real plant was broken down.")
     r1s = r1.sort_values("confidence", ascending=False)
     sel = st.selectbox(
-        "Pick a match", r1s["res"].tolist(),
+        "Pick a match", r1s["res"].tolist(), key=f"reid_pick_{fname}",
         format_func=lambda r: f'Bidder #{int(r)} → {r1s[r1s.res==r]["cand_name"].iloc[0]}  '
                               f'({r1s[r1s.res==r]["confidence"].iloc[0]:.0%} confidence)')
     link = r1s[r1s.res == sel].iloc[0]
@@ -382,7 +421,14 @@ We score the timing overlap with a standard statistic — the **Matthews correla
     kpi(k[0], "Anonymous bidder", f'#{int(link["res"])}')
     kpi(k[1], "Likely real plant", link["cand_name"])
     kpi(k[2], "Size match", f'{link["bidder_cap"]:.1f} / {link["cand_pmax"]:.1f} MW', "bidder offers / plant capacity")
-    kpi(k[3], "Timing match (φ)", f'{link["phi"]:.2f}', "0 = chance, 1 = perfect", tone="critical" if link["phi"]>0.6 else "serious")
+    has_rho = is_mag and "rho" in link.index and pd.notna(link.get("rho"))
+    if has_rho:
+        kpi(k[3], "Timing φ · Size-track ρ", f'{link["phi"]:.2f} · {link["rho"]:.2f}',
+            "0–1 each; ρ uses partial curtailments",
+            tone="critical" if max(link["phi"], link["rho"]) > 0.6 else "serious")
+    else:
+        kpi(k[3], "Timing match (φ)", f'{link["phi"]:.2f}', "0 = chance, 1 = perfect",
+            tone="critical" if link["phi"] > 0.6 else "serious")
     kpi(k[4], "Overall confidence", f'{link["confidence"]:.0%}', tone="critical")
 
     bday = load("bidder_daily_cap.parquet")
@@ -392,39 +438,57 @@ We score the timing overlap with a standard statistic — the **Matthews correla
     ref = bd["cap"].median()
 
     fig = go.Figure()
-    # shade the matched plant's forced-outage days (no per-band labels — they'd
-    # stack into unreadable clutter; the legend swatch + caption explain the red)
-    has_outages = False
+    # shade the matched plant's outage days: forced = red, planned = amber.
+    # (No per-band labels — they'd stack into clutter; legend swatches + caption explain.)
+    FORCED_FILL, PLANNED_FILL = "rgba(208,59,59,0.14)", "rgba(237,161,0,0.18)"
+    n_forced = n_planned = 0
     if have("resource_outage_daily.parquet"):
         rod = load("resource_outage_daily.parquet")
         od = rod[rod["rid"] == link["cand_rid"]].copy()
         od["day"] = pd.to_datetime(od["day"])
-        has_outages = len(od) > 0
-        for dday in od["day"]:
+        forced_days  = od[od["kind"] == "forced"]["day"]
+        planned_days = od[od["kind"] == "planned"]["day"] if use_planned else od.iloc[0:0]["day"]
+        for dday in forced_days:
             fig.add_vrect(x0=dday - pd.Timedelta(hours=12), x1=dday + pd.Timedelta(hours=12),
-                          fillcolor="rgba(208,59,59,0.14)", line_width=0, layer="below")
+                          fillcolor=FORCED_FILL, line_width=0, layer="below")
+        for dday in planned_days:
+            fig.add_vrect(x0=dday - pd.Timedelta(hours=12), x1=dday + pd.Timedelta(hours=12),
+                          fillcolor=PLANNED_FILL, line_width=0, layer="below")
+        n_forced, n_planned = len(forced_days), len(planned_days)
     fig.add_trace(go.Scatter(
-        x=bd["day"], y=bd["cap"], mode="lines", name="Power offered by anonymous bidder",
+        x=bd["day"], y=bd["cap"], mode="lines+markers", name="Anonymous bidder — peak power offered",
         line=dict(color=BLUE, width=1.6),
-        hovertemplate="%{x|%b %d}: %{y:.1f} MW offered<extra></extra>"))
-    if has_outages:
-        # invisible proxy trace so the red bands get one clean legend entry
+        marker=dict(size=4, color=BLUE, line=dict(width=0.5, color="white")),
+        hovertemplate="%{x|%b %d}: %{y:.1f} MW (day's peak offer)<extra></extra>"))
+    # invisible proxy traces so the shaded bands get clean legend entries
+    if n_forced:
         fig.add_trace(go.Scatter(
-            x=[None], y=[None], mode="markers", name="Matched plant on forced outage",
-            marker=dict(size=12, symbol="square", color="rgba(208,59,59,0.35)"),
-            hoverinfo="skip"))
+            x=[None], y=[None], mode="markers", name="Matched plant — forced outage",
+            marker=dict(size=12, symbol="square", color="rgba(208,59,59,0.35)"), hoverinfo="skip"))
+    if n_planned:
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None], mode="markers", name="Matched plant — planned outage",
+            marker=dict(size=12, symbol="square", color="rgba(237,161,0,0.5)"), hoverinfo="skip"))
     fig.add_hline(y=ref, line=dict(color=MUTED, width=1, dash="dot"),
-                  annotation_text="typical level", annotation_font_size=10, annotation_font_color=MUTED)
-    style(fig, height=380, ytitle="power offered (MW)")
-    st.caption("🟥 Red bands mark days the matched real plant was broken down (a forced outage). "
-               "The anonymous bidder's offered power vanishes on those same days — that lined-up pattern is the fingerprint.")
+                  annotation_text="typical peak", annotation_font_size=10, annotation_font_color=MUTED)
+    style(fig, height=380, ytitle="peak power offered that day (MW)")
+    _dots = " Each blue dot is a day the bidder actually submitted an offer; gaps between dots are days with no entry."
+    if use_planned:
+        st.caption("🟥 Red = forced (unexpected) outages · 🟧 Amber = planned (scheduled) outages. "
+                   "The anonymous bidder's offered power vanishes on those same days — that lined-up pattern is the fingerprint." + _dots)
+    else:
+        st.caption("🟥 Red bands mark days the matched real plant was on a forced (unexpected) outage. "
+                   "The anonymous bidder's offered power vanishes on those same days — that lined-up pattern is the fingerprint." + _dots)
     st.plotly_chart(fig, use_container_width=True)
 
     with st.expander("See every candidate match (and download the data)"):
         st.dataframe(m, width='stretch', height=320)
-        st.caption("Each anonymous bidder can have up to three candidate plants; 'rank 1' is its best match.")
+        _label = "magnitude-aware" if is_mag else "forced + planned" if use_planned else "forced-only"
+        st.caption(f"Each anonymous bidder can have up to three candidate plants; 'rank 1' is its best match. "
+                   f"Showing the **{_label}** results.")
+        _tag = "magnitude" if is_mag else "forced_planned" if use_planned else "forced"
         st.download_button("⬇ Download these matches (CSV)",
-                           m.to_csv(index=False), "caiso_reidentification_2025.csv", "text/csv")
+                           m.to_csv(index=False), f"caiso_reidentification_2025_{_tag}.csv", "text/csv")
 
 # =====================================================================
 # PAGE 4 — METHOD & ASSUMPTIONS
