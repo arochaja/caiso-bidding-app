@@ -1,0 +1,91 @@
+name: Claude Code Review
+
+# Lever 3: automatic AI code review — no @claude mention required.
+#   • Pull requests            -> inline line comments + a summary comment
+#   • Pushes to non-main branch -> a summary review posted as a commit comment
+#
+# The mention-triggered workflow lives in claude.yml and is unchanged.
+# Review scope is deliberately correctness/security only — ruff (Lever 1)
+# already owns style/formatting, so this doesn't duplicate it.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches-ignore:
+      - main
+
+# Default (read-only); jobs widen what they specifically need.
+permissions:
+  contents: read
+
+jobs:
+  # ---------- Pull requests: inline comments + summary ----------
+  pr-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write   # inline + summary comments
+      issues: write          # progress-tracking comment
+      id-token: write         # OIDC used by the action
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Claude review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          track_progress: true
+          prompt: |
+            Review this pull request as a meticulous senior engineer on a
+            Python data app (Streamlit + DuckDB).
+
+            Focus ONLY on things that need judgment: real correctness bugs,
+            wrong assumptions, unsafe SQL or input handling, silent data loss,
+            and edge-case / off-by-one errors. Do NOT comment on style or
+            formatting — a ruff linter/formatter already enforces those.
+
+            Post inline comments on the specific lines using the inline comment
+            tool, then one concise summary comment. If the diff looks good,
+            post a short summary saying so. Be concise and concrete.
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*)"
+
+  # ---------- Pushes to a feature branch (no PR): commit-comment summary ----------
+  push-review:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # required to post a commit comment
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need history to diff this branch against main
+
+      - name: Claude review (commit comment)
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            You are reviewing a push to a feature branch — there is NO pull
+            request, so review the whole branch against main and post ONE
+            summary as a commit comment.
+
+            Steps:
+            1. Fetch main:  git fetch origin main --depth=1
+            2. Diff the branch vs main (focus on Python, but note other files):
+                 git diff origin/main...HEAD
+            3. Review as a meticulous senior engineer — real correctness bugs,
+               wrong assumptions, unsafe SQL/input, edge cases. Ignore style.
+            4. Post ONE concise markdown summary as a commit comment on
+               ${{ github.sha }} using:
+                 gh api repos/${{ github.repository }}/commits/${{ github.sha }}/comments -f body="<your summary>"
+               If the diff is clean, say so briefly. Do not open a PR.
+          claude_args: |
+            --allowedTools "Bash(git fetch:*),Bash(git diff:*),Bash(gh api:*)"
