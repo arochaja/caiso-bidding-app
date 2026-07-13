@@ -1,0 +1,21 @@
+# Pre-commit guardrails (Lever 1).
+# Runs automatically on `git commit` over the files you're committing.
+# Deterministic, zero-token, no AI — catches the boring 80% before review.
+#
+# One-time setup after cloning:
+#   app/.venv/bin/pre-commit install      # wire it into .git/hooks
+# Run manually over everything:
+#   app/.venv/bin/pre-commit run --all-files
+#
+# Rules live in pyproject.toml ([tool.ruff]). Pinned to the ruff version
+# this repo was validated against; bump with `pre-commit autoupdate`.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.21
+    hooks:
+      # Lint: real bugs, unused imports, security (SQL injection, eval, ...).
+      # --fix auto-repairs what it safely can; the commit is blocked until clean.
+      - id: ruff-check
+        args: [--fix]
+      # Format: consistent style (black-compatible). Auto-rewrites in place.
+      - id: ruff-format

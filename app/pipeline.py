@@ -12,12 +12,18 @@ Screens implemented:
 Run:  python pipeline.py
 Outputs land in ./data/derived/
 """
-import os, json, textwrap
+
+import json
+import os
+from collections import defaultdict
+
 import duckdb
+import numpy as np
+import pandas as pd
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.abspath(os.path.join(HERE, "..", "caiso-data"))
-OUT  = os.path.join(HERE, "data", "derived")
+OUT = os.path.join(HERE, "data", "derived")
 SCRATCH = os.environ.get("CAISO_SCRATCH", os.path.join(HERE, ".cache"))
 os.makedirs(OUT, exist_ok=True)
 os.makedirs(SCRATCH, exist_ok=True)
@@ -26,14 +32,17 @@ BIDS = os.path.join(DATA, "2025-RTM-BIDS.parquet")
 OUTG = os.path.join(DATA, "2025-OUTAGES.parquet")
 
 # ---- tunable thresholds (documented in the dashboard "Method" panel) ----
-THR_ELEV   = 250.0   # $/MWh: capacity offered at/above this is "elevated" (well above ~$32 median)
-THR_NEAR   = 900.0   # $/MWh: at/above this is "near-cap" ($1000 bid cap) -> classic withholding zone
-TIGHT_PCTL = 0.90    # hours with forced-outage MW above this percentile are "system-tight"
-CAP_TOL    = 0.12    # re-ident: |bidder_cap - resource_PMAX| / PMAX must be <= this
-MIN_ELEV_HOURS = 200 # withholding: min tight-hour presence to be scored
-TOP_DRILL  = 60      # how many top resources get a stored daily drill-down series
+THR_ELEV = 250.0  # $/MWh: capacity offered at/above this is "elevated" (well above ~$32 median)
+THR_NEAR = 900.0  # $/MWh: at/above this is "near-cap" ($1000 bid cap) -> classic withholding zone
+TIGHT_PCTL = 0.90  # hours with forced-outage MW above this percentile are "system-tight"
+CAP_TOL = 0.12  # re-ident: |bidder_cap - resource_PMAX| / PMAX must be <= this
+MIN_ELEV_HOURS = 200  # withholding: min tight-hour presence to be scored
+TOP_DRILL = 60  # how many top resources get a stored daily drill-down series
 
-def log(m): print(f"[pipeline] {m}", flush=True)
+
+def log(m):
+    print(f"[pipeline] {m}", flush=True)
+
 
 con = duckdb.connect()
 con.execute("PRAGMA threads=6")
@@ -96,7 +105,9 @@ left join outg o on (hh.h >= o.ostart and hh.h < o.oend)
 group by hh.h
 """)
 tight_thr = con.execute(f"select quantile_cont(tight_mw,{TIGHT_PCTL}) from tight").fetchone()[0]
-log(f"  system-tight threshold (P{int(TIGHT_PCTL*100)} of hourly forced-outage MW): {tight_thr:,.0f} MW")
+log(
+    f"  system-tight threshold (P{int(TIGHT_PCTL * 100)} of hourly forced-outage MW): {tight_thr:,.0f} MW"
+)
 
 # =====================================================================
 # Stage 2: market overview (hourly + daily + monthly product mix)
@@ -234,8 +245,6 @@ copy (
 bday = con.execute("select res, day, max(cap) cap from rh group by res, day").fetchdf()
 
 log("  building day-sets and scoring candidate matches...")
-import pandas as pd, numpy as np
-from collections import defaultdict
 
 # Re-id leverages BOTH forced and planned outages. (Screen 1 'tightness'
 # stays forced-only — planned outages aren't unexpected scarcity.) We build
@@ -265,27 +274,34 @@ res_intervals = con.execute("""
 select rid, any_value(rname) rname, max(pmax) pmax, max(nqc) nqc from outg_reid group by rid
 """).fetchdf()
 
+
 def name_is_storage(n):
-    if not isinstance(n, str): return False
+    if not isinstance(n, str):
+        return False
     n = n.upper()
-    return any(k in n for k in ("STORAGE","BATTERY","BESS","ENERGY STORAGE"," ES", "_ES"))
+    return any(k in n for k in ("STORAGE", "BATTERY", "BESS", "ENERGY STORAGE", " ES", "_ES"))
+
+
 res_meta = {}
-for rid, rname, pmax, nqc in res_intervals[["rid","rname","pmax","nqc"]].itertuples(index=False):
+for rid, rname, pmax, nqc in res_intervals[["rid", "rname", "pmax", "nqc"]].itertuples(index=False):
     res_meta[rid] = dict(rname=rname, pmax=pmax, nqc=nqc, storage=name_is_storage(rname))
+
 
 # expand outage intervals to daily coverage, split by type
 def build_res_days(where_clause):
     rows = con.execute(f"select rid, ostart, oend from outg_reid {where_clause}").fetchdf()
     rd = defaultdict(set)
     for rid, s, e in rows.itertuples(index=False):
-        d0 = pd.Timestamp(s).normalize(); d1 = pd.Timestamp(e).normalize()
+        d0 = pd.Timestamp(s).normalize()
+        d1 = pd.Timestamp(e).normalize()
         for d in pd.date_range(d0, d1, freq="D"):
             rd[rid].add(d.date())
     return rd
 
-res_days_forced   = build_res_days("where otype='FORCED'")
-res_days_planned  = build_res_days("where otype='PLANNED'")
-res_days_combined = build_res_days("")   # forced OR planned
+
+res_days_forced = build_res_days("where otype='FORCED'")
+res_days_planned = build_res_days("where otype='PLANNED'")
+res_days_combined = build_res_days("")  # forced OR planned
 
 # bidder -> dip-days (mode-independent: derived from gaps in the bidder's OWN
 # offers). A plant on ANY outage typically STOPS bidding (absent day) or
@@ -307,14 +323,16 @@ for b in bidder.itertuples(index=False):
     for d in span:
         dd = d.date()
         c = caps.get(dd)
-        if c is None or c < 0.35 * ref:   # absent, or genuine collapse vs typical day
+        if c is None or c < 0.35 * ref:  # absent, or genuine collapse vs typical day
             dips.add(dd)
     bidder_dip_days[b.res] = dips
 
-span_len = {b.res: (pd.Timestamp(b.last_day)-pd.Timestamp(b.first_day)).days + 1
-            for b in bidder.itertuples(index=False)}
+span_len = {
+    b.res: (pd.Timestamp(b.last_day) - pd.Timestamp(b.first_day)).days + 1
+    for b in bidder.itertuples(index=False)
+}
 span_first = {b.res: pd.Timestamp(b.first_day).date() for b in bidder.itertuples(index=False)}
-span_last  = {b.res: pd.Timestamp(b.last_day).date()  for b in bidder.itertuples(index=False)}
+span_last = {b.res: pd.Timestamp(b.last_day).date() for b in bidder.itertuples(index=False)}
 
 # ---------------------------------------------------------------------
 # MAGNITUDE signal (leverages PARTIAL curtailments, not just full drop-outs):
@@ -324,8 +342,8 @@ span_last  = {b.res: pd.Timestamp(b.last_day).date()  for b in bidder.itertuples
 # ---------------------------------------------------------------------
 # Plant: fraction of PMAX curtailed each day (forced OR planned), max concurrent.
 oc = con.execute("select rid, ostart, oend, cmw, pmax from outg_reid where pmax > 0").fetchdf()
-res_curt_frac = defaultdict(dict)   # rid -> {day: curtailed_fraction in (0,1]}
-res_curt_mw   = defaultdict(dict)   # rid -> {day: max concurrent curtailment MW}  (for hover)
+res_curt_frac = defaultdict(dict)  # rid -> {day: curtailed_fraction in (0,1]}
+res_curt_mw = defaultdict(dict)  # rid -> {day: max concurrent curtailment MW}  (for hover)
 for rid, s, e, cmw, pmax in oc.itertuples(index=False):
     mw = float(cmw) if cmw is not None else 0.0
     f = min(1.0, mw / pmax) if pmax else 0.0
@@ -343,19 +361,26 @@ for b in bidder.itertuples(index=False):
     typ = bref.get(b.res, 0)
     if not typ or typ <= 0:
         continue
-    dd = [d.date() for d in pd.date_range(pd.Timestamp(b.first_day), pd.Timestamp(b.last_day), freq="D")]
+    dd = [
+        d.date()
+        for d in pd.date_range(pd.Timestamp(b.first_day), pd.Timestamp(b.last_day), freq="D")
+    ]
     caps = present_cap.get(b.res, {})
     span_days[b.res] = dd
     bidder_reduction[b.res] = np.array(
-        [1.0 if caps.get(x) is None else float(np.clip(1 - caps[x]/typ, 0.0, 1.0)) for x in dd])
+        [1.0 if caps.get(x) is None else float(np.clip(1 - caps[x] / typ, 0.0, 1.0)) for x in dd]
+    )
+
 
 def spearman(x, y):
     # rank correlation; NaN when either series is constant or too short.
     if len(x) < 5 or np.std(x) == 0 or np.std(y) == 0:
         return float("nan")
-    rx = pd.Series(x).rank().values; ry = pd.Series(y).rank().values
+    rx = pd.Series(x).rank().values
+    ry = pd.Series(y).rank().values
     c = np.corrcoef(rx, ry)[0, 1]
     return float(c) if np.isfinite(c) else float("nan")
+
 
 def phi_coeff(dips, odays_span, N):
     # Matthews correlation between two binary day-vectors of length N.
@@ -363,9 +388,10 @@ def phi_coeff(dips, odays_span, N):
     n10 = len(dips) - n11
     n01 = len(odays_span) - n11
     n00 = N - n11 - n10 - n01
-    num = n11*n00 - n10*n01
-    den = (n11+n10)*(n11+n01)*(n00+n10)*(n00+n01)
-    return (num/(den**0.5)) if den > 0 else 0.0, n11
+    num = n11 * n00 - n10 * n01
+    den = (n11 + n10) * (n11 + n01) * (n00 + n10) * (n00 + n01)
+    return (num / (den**0.5)) if den > 0 else 0.0, n11
+
 
 def run_reident(res_days, magnitude=False):
     """Score every fingerprint-able bidder against PMAX-matching candidate resources.
@@ -377,16 +403,22 @@ def run_reident(res_days, magnitude=False):
       strong timing OR strong magnitude, and blend
       confidence = 0.35*phi + 0.30*rho + 0.25*size + 0.10*type.
     Returns (sorted DF, n_fingerprintable)."""
-    res_list = [(rid, res_meta[rid]["pmax"]) for rid in res_days
-                if rid in res_meta and res_meta[rid]["pmax"]
-                and not np.isnan(res_meta[rid]["pmax"]) and len(res_days[rid]) >= 4]
+    res_list = [
+        (rid, res_meta[rid]["pmax"])
+        for rid in res_days
+        if rid in res_meta
+        and res_meta[rid]["pmax"]
+        and not np.isnan(res_meta[rid]["pmax"])
+        and len(res_days[rid]) >= 4
+    ]
     res_list.sort(key=lambda x: x[1])
     res_pmax = np.array([p for _, p in res_list]) if res_list else np.array([0.0])
-    res_ids  = [r for r, _ in res_list]
+    res_ids = [r for r, _ in res_list]
     matches, n_fp = [], 0
     for b in bidder.itertuples(index=False):
         cap = b.cap_ref
-        if not cap or cap <= 0: continue
+        if not cap or cap <= 0:
+            continue
         dips = bidder_dip_days.get(b.res, set())
         N = span_len[b.res]
         if magnitude:
@@ -401,17 +433,23 @@ def run_reident(res_days, magnitude=False):
             if len(dips) < 3 or N < 30 or len(dips) > 0.7 * N:
                 continue
         n_fp += 1
-        lo, hi = cap*(1-CAP_TOL), cap*(1+CAP_TOL)
-        i0 = int(np.searchsorted(res_pmax, lo)); i1 = int(np.searchsorted(res_pmax, hi))
+        lo, hi = cap * (1 - CAP_TOL), cap * (1 + CAP_TOL)
+        i0 = int(np.searchsorted(res_pmax, lo))
+        i1 = int(np.searchsorted(res_pmax, hi))
         d0, d1 = span_first[b.res], span_last[b.res]
-        sdays = span_days.get(b.res); yred = bidder_reduction.get(b.res)
+        sdays = span_days.get(b.res)
+        yred = bidder_reduction.get(b.res)
         cands = []
         for j in range(i0, i1):
-            rid = res_ids[j]; pmax = res_pmax[j]
+            rid = res_ids[j]
+            pmax = res_pmax[j]
             odays = res_days.get(rid)
-            if not odays: continue
+            if not odays:
+                continue
             odays_span = {d for d in odays if d0 <= d <= d1}
-            if not odays_span or len(odays_span) > 0.9 * N:   # down ~all span carries no timing signal
+            if (
+                not odays_span or len(odays_span) > 0.9 * N
+            ):  # down ~all span carries no timing signal
                 continue
             phi, inter = phi_coeff(dips, odays_span, N)
             rho, n_curt = float("nan"), 0
@@ -419,34 +457,50 @@ def run_reident(res_days, magnitude=False):
                 cf = res_curt_frac.get(rid, {})
                 xarr = np.fromiter((cf.get(dd, 0.0) for dd in sdays), dtype=float, count=len(sdays))
                 n_curt = int(np.count_nonzero(xarr))
-                if n_curt >= 10:                              # balanced guard: enough curtailment days
+                if n_curt >= 10:  # balanced guard: enough curtailment days
                     rho = spearman(xarr, yred)
-            cap_close = 1 - abs(cap-pmax)/(pmax if pmax else 1)
-            stor_match = (b.is_storage == res_meta[rid]["storage"])
+            cap_close = 1 - abs(cap - pmax) / (pmax if pmax else 1)
+            stor_match = b.is_storage == res_meta[rid]["storage"]
             if magnitude:
-                phi_ok = (phi >= 0.30 and inter >= 3)
-                rho_ok = (not np.isnan(rho)) and rho >= 0.35   # balanced guard
+                phi_ok = phi >= 0.30 and inter >= 3
+                rho_ok = (not np.isnan(rho)) and rho >= 0.35  # balanced guard
                 if not (phi_ok or rho_ok):
                     continue
-                conf = (0.35*max(phi, 0.0) + 0.30*(max(rho, 0.0) if not np.isnan(rho) else 0.0)
-                        + 0.25*cap_close + (0.10 if stor_match else 0.0))
+                conf = (
+                    0.35 * max(phi, 0.0)
+                    + 0.30 * (max(rho, 0.0) if not np.isnan(rho) else 0.0)
+                    + 0.25 * cap_close
+                    + (0.10 if stor_match else 0.0)
+                )
             else:
-                if phi < 0.30 or inter < 3:                   # require distinctive timing coincidence
+                if phi < 0.30 or inter < 3:  # require distinctive timing coincidence
                     continue
-                conf = 0.60*phi + 0.25*cap_close + (0.15 if stor_match else 0.0)
-            recall = inter/len(dips) if dips else 0.0
-            jacc   = inter/len(dips | odays_span) if (dips or odays_span) else 0.0
+                conf = 0.60 * phi + 0.25 * cap_close + (0.15 if stor_match else 0.0)
+            recall = inter / len(dips) if dips else 0.0
+            jacc = inter / len(dips | odays_span) if (dips or odays_span) else 0.0
             cands.append((rid, pmax, cap_close, recall, jacc, phi, conf, inter, rho))
         cands.sort(key=lambda x: -x[6])
-        for rank,(rid,pmax,cap_close,recall,jacc,phi,conf,inter,rho) in enumerate(cands[:3], start=1):
+        for rank, (rid, pmax, _cap_close, recall, jacc, phi, conf, inter, rho) in enumerate(
+            cands[:3], start=1
+        ):
             m = res_meta[rid]
             rec = dict(
-                res=b.res, sc=b.sc, is_storage=bool(b.is_storage), bidder_cap=round(float(cap),2),
-                cand_rid=rid, cand_name=m["rname"], cand_pmax=float(pmax),
-                cap_diff_pct=round(abs(cap-pmax)/pmax*100,2),
-                dip_days=len(dips), overlap_days=int(inter),
-                recall=round(float(recall),3), jaccard=round(float(jacc),3),
-                phi=round(float(phi),3), confidence=round(float(conf),3), rank=rank)
+                res=b.res,
+                sc=b.sc,
+                is_storage=bool(b.is_storage),
+                bidder_cap=round(float(cap), 2),
+                cand_rid=rid,
+                cand_name=m["rname"],
+                cand_pmax=float(pmax),
+                cap_diff_pct=round(abs(cap - pmax) / pmax * 100, 2),
+                dip_days=len(dips),
+                overlap_days=int(inter),
+                recall=round(float(recall), 3),
+                jaccard=round(float(jacc), 3),
+                phi=round(float(phi), 3),
+                confidence=round(float(conf), 3),
+                rank=rank,
+            )
             if magnitude:
                 rec["rho"] = None if np.isnan(rho) else round(float(rho), 3)
             matches.append(rec)
@@ -455,10 +509,11 @@ def run_reident(res_days, magnitude=False):
         mdf = mdf.sort_values(["confidence"], ascending=False).reset_index(drop=True)
     return mdf, n_fp
 
+
 log("  scoring fingerprints (forced; forced+planned; magnitude-aware)...")
-mdf_forced,    fp_forced = run_reident(res_days_forced)
-mdf_combined,  fp_comb   = run_reident(res_days_combined)
-mdf_magnitude, fp_mag    = run_reident(res_days_combined, magnitude=True)
+mdf_forced, fp_forced = run_reident(res_days_forced)
+mdf_combined, fp_comb = run_reident(res_days_combined)
+mdf_magnitude, fp_mag = run_reident(res_days_combined, magnitude=True)
 
 mdf_forced.to_parquet(f"{OUT}/reident_matches_forced.parquet", index=False)
 mdf_combined.to_parquet(f"{OUT}/reident_matches_combined.parquet", index=False)
@@ -479,13 +534,19 @@ to '{OUT}/bidder_hourly_cap.parquet' (format parquet)
 """)
 log(f"  hourly cap series written for {len(matched_res):,} matched bidders")
 
+
 def highconf(mdf):
-    if not len(mdf): return 0
-    return int((mdf[mdf["rank"]==1]["confidence"] >= 0.6).sum())
+    if not len(mdf):
+        return 0
+    return int((mdf[mdf["rank"] == 1]["confidence"] >= 0.6).sum())
+
+
 hc_forced, hc_comb, hc_mag = highconf(mdf_forced), highconf(mdf_combined), highconf(mdf_magnitude)
 log(f"  fingerprint-able bidders: forced={fp_forced:,}, combined={fp_comb:,}, magnitude={fp_mag:,}")
-log(f"  high-confidence (>=0.60) links: forced={hc_forced:,}, combined={hc_comb:,} (+{hc_comb-hc_forced}), "
-    f"magnitude={hc_mag:,} (+{hc_mag-hc_forced} vs forced)")
+log(
+    f"  high-confidence (>=0.60) links: forced={hc_forced:,}, combined={hc_comb:,} (+{hc_comb - hc_forced}), "
+    f"magnitude={hc_mag:,} (+{hc_mag - hc_forced} vs forced)"
+)
 
 # daily outage overlay for the drill-down. Tag each candidate day forced vs
 # planned (forced precedence); cover candidates from ALL result sets.
@@ -496,15 +557,16 @@ for mdf in (mdf_forced, mdf_combined, mdf_magnitude):
 rod = []
 for rid in cand_ids:
     pmax = res_meta.get(rid, {}).get("pmax")
-    mwd  = res_curt_mw.get(rid, {})
+    mwd = res_curt_mw.get(rid, {})
     fdays = res_days_forced.get(rid, set())
     pdays = res_days_planned.get(rid, set())
     for d in sorted(fdays):
         rod.append((rid, d, "forced", mwd.get(d), pmax))
     for d in sorted(pdays - fdays):
         rod.append((rid, d, "planned", mwd.get(d), pmax))
-pd.DataFrame(rod, columns=["rid","day","kind","curt_mw","pmax"]).to_parquet(
-    f"{OUT}/resource_outage_daily.parquet", index=False)
+pd.DataFrame(rod, columns=["rid", "day", "kind", "curt_mw", "pmax"]).to_parquet(
+    f"{OUT}/resource_outage_daily.parquet", index=False
+)
 
 # =====================================================================
 # meta.json
@@ -516,14 +578,24 @@ meta = dict(
     generated_scope="CAISO RTM 2025 (full year)",
     n_bid_rows=int(con.execute(f"select count(*) from read_parquet('{BIDS}')").fetchone()[0]),
     n_resources=int(overview[0]),
-    date_min=str(overview[1]), date_max=str(overview[2]),
-    thresholds=dict(elevated_price=THR_ELEV, nearcap_price=THR_NEAR,
-                    tight_percentile=TIGHT_PCTL, tight_mw=round(float(tight_thr),1),
-                    cap_tolerance_pct=CAP_TOL*100, min_tight_hours=MIN_ELEV_HOURS),
+    date_min=str(overview[1]),
+    date_max=str(overview[2]),
+    thresholds=dict(
+        elevated_price=THR_ELEV,
+        nearcap_price=THR_NEAR,
+        tight_percentile=TIGHT_PCTL,
+        tight_mw=round(float(tight_thr), 1),
+        cap_tolerance_pct=CAP_TOL * 100,
+        min_tight_hours=MIN_ELEV_HOURS,
+    ),
     withholding_scored=int(n_wh),
     reident_candidate_bidders=int(mdf_forced["res"].nunique()) if len(mdf_forced) else 0,
-    reident_candidate_bidders_combined=int(mdf_combined["res"].nunique()) if len(mdf_combined) else 0,
-    reident_candidate_bidders_magnitude=int(mdf_magnitude["res"].nunique()) if len(mdf_magnitude) else 0,
+    reident_candidate_bidders_combined=int(mdf_combined["res"].nunique())
+    if len(mdf_combined)
+    else 0,
+    reident_candidate_bidders_magnitude=int(mdf_magnitude["res"].nunique())
+    if len(mdf_magnitude)
+    else 0,
     reident_highconf_links=hc_forced,
     reident_highconf_links_combined=hc_comb,
     reident_highconf_links_magnitude=hc_mag,
@@ -535,10 +607,10 @@ meta = dict(
         "Unmasking (Screen 2) matches a bidder's quiet days against a plant's outage days; you can compare three methods — forced outages only, forced + planned, or magnitude-aware (which also correlates the size of partial curtailments against how much the bidder scaled back its offers). The 'grid is short' scarcity measure (Screen 1) always uses forced outages only.",
     ],
 )
-with open(f"{OUT}/meta.json","w") as f:
+with open(f"{OUT}/meta.json", "w") as f:
     json.dump(meta, f, indent=2)
 
 log("DONE. Derived files in " + OUT)
 for fn in sorted(os.listdir(OUT)):
-    sz = os.path.getsize(os.path.join(OUT, fn))/1e6
+    sz = os.path.getsize(os.path.join(OUT, fn)) / 1e6
     log(f"  {fn:34s} {sz:8.2f} MB")
