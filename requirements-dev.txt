@@ -1,0 +1,11 @@
+# Developer / guardrail tooling — NOT needed to run the deployed app.
+# Kept separate from requirements.txt so the Streamlit Cloud deploy stays lean.
+#
+# Install into the app venv:
+#   app/.venv/bin/pip install -r requirements-dev.txt
+#   app/.venv/bin/pre-commit install
+#
+# pre-commit runs its own pinned copy of ruff (see .pre-commit-config.yaml);
+# ruff is listed here too for editor integration and manual `ruff check` runs.
+ruff==0.15.21
+pre-commit==4.3.0
