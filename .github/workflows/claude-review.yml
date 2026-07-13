@@ -1,0 +1,52 @@
+name: Claude Code Review
+
+# Lever 3: automatic AI code review of pull requests — no @claude mention needed.
+# Posts inline line comments + a summary comment.
+#
+# Scope is deliberately correctness/security only — ruff (Lever 1) already owns
+# style/formatting, and the local Stop-hook review (Lever 2) already covers
+# work-in-progress on branches, so this is purely the PR-time gate.
+#
+# NOTE: claude-code-action@v1 only supports PR/issue/comment events (a `push`
+# trigger errors with "Unsupported event type: push"), so this is PR-only by
+# design. Branch/pre-PR review is handled by Lever 2 locally.
+# The mention-triggered workflow lives in claude.yml and is unchanged.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write   # inline + summary comments
+  issues: write          # progress-tracking comment
+  id-token: write        # OIDC used by the action
+
+jobs:
+  pr-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Claude review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          track_progress: true
+          prompt: |
+            Review this pull request as a meticulous senior engineer on a
+            Python data app (Streamlit + DuckDB).
+
+            Focus ONLY on things that need judgment: real correctness bugs,
+            wrong assumptions, unsafe SQL or input handling, silent data loss,
+            and edge-case / off-by-one errors. Do NOT comment on style or
+            formatting — a ruff linter/formatter already enforces those.
+
+            Post inline comments on the specific lines using the inline comment
+            tool, then one concise summary comment. If the diff looks good,
+            post a short summary saying so. Be concise and concrete.
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*)"
