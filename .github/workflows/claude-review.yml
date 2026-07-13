@@ -1,16 +1,14 @@
 name: Claude Code Review
 
 # Lever 3: automatic AI code review of pull requests — no @claude mention needed.
-# Posts inline line comments + a summary comment.
+# Minimal form: a direct review prompt, no track_progress orchestration.
 #
-# Scope is deliberately correctness/security only — ruff (Lever 1) already owns
-# style/formatting, and the local Stop-hook review (Lever 2) already covers
-# work-in-progress on branches, so this is purely the PR-time gate.
+# Scope is correctness/security only — ruff (Lever 1) owns style, and the local
+# Stop-hook review (Lever 2) covers work-in-progress on branches.
 #
-# NOTE: claude-code-action@v1 only supports PR/issue/comment events, and the
-# workflow file must exist with identical content on the default branch for the
-# action to run (GitHub security validation) — so keep main + PR branch in sync.
-# The mention-triggered workflow lives in claude.yml and is unchanged.
+# NOTE: claude-code-action@v1 only runs when this file exists with IDENTICAL
+# content on the default branch (GitHub security validation) — keep main + PR
+# branch in sync. The mention-triggered workflow lives in claude.yml (unchanged).
 
 on:
   pull_request:
@@ -18,9 +16,9 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write   # inline + summary comments
-  issues: write          # progress-tracking comment
-  id-token: write        # OIDC used by the action
+  pull-requests: write
+  issues: write
+  id-token: write
 
 jobs:
   pr-review:
@@ -35,24 +33,10 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          track_progress: true
-          classify_inline_comments: true
           prompt: |
-            REPO: ${{ github.repository }}
-            PR NUMBER: ${{ github.event.pull_request.number }}
-
-            Perform a code review of this pull request. First run `gh pr diff`
-            to fetch the diff, then review it as a meticulous senior engineer on
-            a Python data app (Streamlit + DuckDB).
-
-            Focus ONLY on things that need judgment:
-            1. Real correctness bugs and wrong assumptions
-            2. Security issues — unsafe SQL, unvalidated input
-            3. Silent data loss and edge-case / off-by-one errors
-            Do NOT comment on style or formatting — ruff already enforces those.
-
-            Post inline comments on the specific lines using the inline comment
-            tool, with concrete suggestions. Then post one concise summary
-            comment. If the diff looks good, post a short summary saying so.
-          claude_args: |
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*)"
+            Review this pull request for real correctness bugs, unsafe SQL /
+            input handling, silent data loss, and edge-case errors. Ignore style
+            (ruff already enforces it). Run `gh pr diff` to see the changes, then
+            leave inline comments on the specific problem lines and post one
+            concise summary comment. If it looks good, say so briefly.
+          claude_args: '--allowedTools "Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),mcp__github_inline_comment__create_inline_comment"'
