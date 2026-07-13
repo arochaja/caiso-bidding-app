@@ -3,6 +3,11 @@ name: Claude Code Review
 # Lever 3: automatic AI code review of pull requests — no @claude mention needed.
 # Posts a summary (via the tracked review comment) + inline line comments.
 #
+# Lever 5 (lightest): also surfaces the review CONTEXT, not just the diff —
+# uploads the agent's full transcript as an artifact and posts a link to the
+# review conversation into Slack #all-caiso-code. When code is AI-generated the
+# conversation is the real work, so we keep it reviewable, not just the result.
+#
 # Scope is correctness/security only — ruff (Lever 1) owns style, and the local
 # Stop-hook review (Lever 2) covers work-in-progress on branches.
 #
@@ -32,6 +37,7 @@ jobs:
           fetch-depth: 1
 
       - name: Claude review
+        id: review
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -56,3 +62,31 @@ jobs:
             in your tracked review comment. If the diff looks good, say so.
           claude_args: |
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*)"
+
+      # ---- Lever 5 (lightest): surface the review CONTEXT, not just the diff ----
+      # Keep the agent's full transcript as a downloadable artifact, and drop a
+      # link to the review conversation into #all-caiso-code. Both run even if the
+      # review step fails, so the context is always inspectable.
+      - name: Upload review transcript
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude-review-transcript-pr${{ github.event.pull_request.number }}
+          path: ${{ steps.review.outputs.execution_file }}
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Post review context to Slack (#all-caiso-code)
+        if: always()
+        env:
+          SLACK_ALLCHAN_WEBHOOK: ${{ secrets.SLACK_ALLCHAN_WEBHOOK }}
+          PR: ${{ github.event.pull_request.number }}
+          PR_URL: ${{ github.server_url }}/${{ github.repository }}/pull/${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "${SLACK_ALLCHAN_WEBHOOK:-}" ]; then
+            echo "SLACK_ALLCHAN_WEBHOOK not set; skipping"; exit 0
+          fi
+          TEXT=":microscope: *Claude reviewed PR #${PR}* — the full agent conversation (the real work behind the diff):\n• <${PR_URL}|PR #${PR} + inline review>\n• <${RUN_URL}|run log + transcript artifact>"
+          curl -s -X POST -H 'Content-Type: application/json' \
+            --data "{\"text\": \"${TEXT}\"}" "$SLACK_ALLCHAN_WEBHOOK"
