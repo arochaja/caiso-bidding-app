@@ -19,3 +19,15 @@ repos:
         args: [--fix]
       # Format: consistent style (black-compatible). Auto-rewrites in place.
       - id: ruff-format
+
+  # Post-commit changelog → Slack #all-caiso-code (backgrounded; non-blocking).
+  # Install this stage once with:  pre-commit install --hook-type post-commit
+  - repo: local
+    hooks:
+      - id: caiso-changelog
+        name: post commit changelog to Slack (#all-caiso-code)
+        entry: bash .claude/hooks/changelog_hook.sh
+        language: system
+        stages: [post-commit]
+        always_run: true
+        pass_filenames: false

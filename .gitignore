@@ -7,8 +7,9 @@ app/.cache/
 
 # --- secrets (login credentials) ---
 app/.streamlit/secrets.toml
-# Slack incoming-webhook URL for the code-review hook (Lever 2) — never commit.
+# Slack incoming-webhook URLs — never commit.
 .claude/slack-webhook
+.claude/slack-allchan-webhook
 
 # --- generated code-review artifacts (Lever 2) ---
 .claude/reviews/

@@ -28,4 +28,4 @@ ignore = [
 # Local automation (the Lever 2 review hook): intentionally invokes known tools
 # (git, claude) by name and POSTs to a validated Slack webhook URL. These are
 # trusted, developer-run scripts, not request handlers.
-".claude/hooks/*.py" = ["S603", "S607", "S310"]
+".claude/hooks/*.py" = ["S603", "S607", "S310", "S110"]
