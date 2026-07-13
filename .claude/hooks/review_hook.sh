@@ -8,6 +8,14 @@ set -euo pipefail
 #    hook; that nested run inherits this env var and bails out here.
 [ -n "${CAISO_REVIEW_RUNNING:-}" ] && exit 0
 
+# 1b) Never run inside CI. The Claude GitHub Action loads this repo's
+#     .claude/settings.json (its settingSources include "project"), so this
+#     Stop hook would otherwise fire there and try to launch the local worker
+#     via app/.venv, which doesn't exist on a CI runner. This is a local tool.
+if [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then
+    exit 0
+fi
+
 # 2) Locate the repo.
 PROJ="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || true)}"
 [ -z "$PROJ" ] && exit 0
