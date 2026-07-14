@@ -1,3 +1,14 @@
+---
+title: CAISO Market Surveillance
+emoji: ⚡
+colorFrom: blue
+colorTo: gray
+sdk: streamlit
+sdk_version: 1.50.0
+app_file: app/dashboard.py
+pinned: false
+---
+
 # CAISO Market Surveillance Dashboard
 
 An interactive market-auditor tool over the CAISO 2025 Real-Time Market data
