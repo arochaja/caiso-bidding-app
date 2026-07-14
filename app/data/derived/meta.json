@@ -72,7 +72,7 @@
     {
       "key": "outages",
       "name": "Generator outages",
-      "file": "2025-OUTAGES.parquet",
+      "file": "2025-OUTAGES-v2.parquet",
       "what": "A log of when power plants were unavailable \u2014 either an unexpected breakdown (FORCED) or scheduled maintenance (PLANNED) \u2014 and how many megawatts each lost. Screen 1 uses forced outages as one way to gauge when the grid was short; Screen 2 uses the outage calendar to fingerprint anonymous bidders.",
       "stats": [
         [
@@ -138,19 +138,19 @@
     "elevated_price": 250.0,
     "nearcap_price": 900.0,
     "tight_percentile": 0.9,
-    "tight_mw": 15662.7,
+    "tight_mw": 16780.9,
     "price_tight_percentile": 0.9,
     "price_tight_lmp": 54.4,
     "cap_tolerance_pct": 12.0,
     "min_tight_hours": 200
   },
-  "withholding_scored": 1262,
-  "withholding_scored_outage": 1262,
+  "withholding_scored": 1261,
+  "withholding_scored_outage": 1261,
   "withholding_scored_price": 1325,
   "withholding_scored_by": {
-    "RTM_outage": 1262,
+    "RTM_outage": 1261,
     "RTM_price": 1325,
-    "DAM_outage": 581,
+    "DAM_outage": 573,
     "DAM_price": 548
   },
   "markets": [
@@ -169,21 +169,21 @@
     "neg_price_hours": 590,
     "price_hours": 8736
   },
-  "reident_candidate_bidders": 324,
-  "reident_candidate_bidders_combined": 339,
-  "reident_candidate_bidders_magnitude": 469,
-  "reident_highconf_links": 232,
-  "reident_highconf_links_combined": 250,
-  "reident_highconf_links_magnitude": 179,
-  "reident_dam_corroborated": 72,
-  "reident_dam_corroborated_combined": 84,
-  "reident_dam_corroborated_magnitude": 65,
+  "reident_candidate_bidders": 321,
+  "reident_candidate_bidders_combined": 349,
+  "reident_candidate_bidders_magnitude": 482,
+  "reident_highconf_links": 234,
+  "reident_highconf_links_combined": 260,
+  "reident_highconf_links_magnitude": 199,
+  "reident_dam_corroborated": 75,
+  "reident_dam_corroborated_combined": 93,
+  "reident_dam_corroborated_magnitude": 71,
   "assumptions": [
     "Screen 1 runs on two bid markets you can toggle: real-time (RTM, the default) and day-ahead (DAM). Because the price data is day-ahead, the DAM market lets Screen 1 compare offers against the ACTUAL day-ahead clearing price \u2014 a real impact test \u2014 while RTM keeps the original design.",
     "Screen 1 can define 'how short the grid was' two ways: by outages (how much plant capacity was offline \u2014 the original stand-in) or by prices (hours when the day-ahead market price spiked). The price basis uses real day-ahead LMP at the three CAISO trading hubs; the outage basis needs no price data at all.",
     "The real clearing-price impact test (DAM market) measures the capacity a GENERATOR offered ABOVE the price that actually cleared that hour \u2014 capacity it effectively withheld from the day-ahead solution \u2014 comparing scarce vs. normal hours. It covers generators only (day-ahead demand and intertie bids are excluded, since a load bidding above the price is willingness-to-pay, not withheld supply) and is measured at the system/hub price level because bids carry no node identifier.",
     "There's no fuel-cost data, so 'holding back power' is still judged by comparing each plant to its own behavior in short vs. normal hours \u2014 the clearing price sharpens the 'high offer' threshold but does not prove intent.",
-    "When a forced outage has no recorded end time, we treat it as lasting one hour (the typical length).",
+    "Outages come from CAISO's daily 'prior trade date' reports. A row with no end time means the outage was still ongoing as of that report's trade date, so we treat it as active through that date \u2014 not a one-hour blip. Outages that began before 2025 but were still active are clipped into the 2025 window, and the same ongoing outage re-listed across many daily reports is collapsed so it is counted once.",
     "Each offer is a set of (amount, price) steps with prices that only go up; a plant's 'capacity' is the largest amount it offered.",
     "Unmasking (Screen 2) matches a bidder's quiet days against a plant's outage days (three methods: forced, forced+planned, magnitude-aware). Each match is cross-checked against the DAY-AHEAD offers: if the bidder also goes quiet in DAM on the plant's outage days, that is a second, market-independent line of evidence."
   ]
