@@ -32,7 +32,9 @@ BIDS = os.path.join(DATA, "2025-RTM-BIDS.parquet")
 DAMB = os.path.join(
     DATA, "2025-DAM-BIDS.parquet"
 )  # day-ahead bids (same market as the LMP)
-OUTG = os.path.join(DATA, "2025-OUTAGES.parquet")
+OUTG = os.path.join(
+    DATA, "2025-OUTAGES-v2.parquet"
+)  # trade-date-preserving rebuild (build_outages_v2.py)
 LMP = os.path.join(DATA, "2025-DAM-LMP-full.parquet")  # merged full-year day-ahead LMP
 
 # the two bid markets scored side by side; RTM is the default/primary market.
@@ -64,6 +66,22 @@ TOP_DRILL = 60  # how many top resources get a stored daily drill-down series
 def log(m):
     print(f"[pipeline] {m}", flush=True)
 
+
+# The outage input is a trade-date-corrected rebuild of CAISO's daily XLSX reports
+# (build_outages_v2.py): a null end there means "still ongoing as of that report's trade
+# date", not a 1-hour blip. Build it once from the raw XLSX if the parquet isn't present;
+# it is cached thereafter so repeat runs stay fast.
+if not os.path.exists(OUTG):
+    import build_outages_v2
+
+    if not os.path.isdir(build_outages_v2.SRC):
+        raise SystemExit(
+            f"Outage input missing and cannot be built:\n  need {OUTG}\n"
+            f"  or the raw daily XLSX reports in {build_outages_v2.SRC}\n"
+            "See caiso-data/README.md."
+        )
+    log("Outage parquet not found — building it from the raw daily XLSX (one-time)...")
+    build_outages_v2.main()
 
 # fail early and clearly if any required raw input is missing
 _missing = [p for p in (BIDS, DAMB, OUTG, LMP) if not os.path.exists(p)]
@@ -110,20 +128,43 @@ log(f"  resource-hours: {n_rh:,}")
 # Stage 1: system tightness — forced-outage MW active per hour
 # =====================================================================
 log("Stage 1: computing hourly system tightness from forced outages...")
+
+# Shared collapsed-segment table, used by BOTH the tightness screen (below) and the
+# re-identification calendar (Stage 4). The v2 outage source is CAISO's daily
+# "prior trade date" reports concatenated: a persistent outage is re-listed every day
+# with the same anchored start, and a null end means "still ongoing as of that report's
+# trade date" — already resolved into CURTAILMENT END FILLED by build_outages_v2.py.
+# We collapse those per-report duplicates to one segment per (outage, start), taking the
+# furthest END FILLED as the true extent. This kills the double-count that inflated
+# tightness AND the +1h truncation that hid long/ongoing outages (see outage-null-end).
 con.execute(f"""
-create or replace table outg as
+create or replace table outg_seg as
 select
-  "RESOURCE ID"   as rid,
-  "RESOURCE NAME" as rname,
-  date_trunc('hour', "CURTAILMENT START DATE TIME")                                as ostart,
-  coalesce("CURTAILMENT END DATE TIME", "CURTAILMENT START DATE TIME" + interval 1 hour) as oend,
-  "CURTAILMENT MW"   as cmw,
-  "RESOURCE PMAX MW" as pmax,
-  "NET QUALIFYING CAPACITY MW" as nqc
+  "OUTAGE MRID"                     as mrid,
+  any_value("RESOURCE ID")          as rid,
+  any_value("RESOURCE NAME")        as rname,
+  "OUTAGE TYPE"                     as otype,
+  "CURTAILMENT START DATE TIME"     as ostart_raw,
+  max("CURTAILMENT END FILLED")     as oend_filled,
+  max("CURTAILMENT MW")             as cmw,
+  max("RESOURCE PMAX MW")           as pmax,
+  max("NET QUALIFYING CAPACITY MW") as nqc
 from read_parquet('{OUTG}')
-where "OUTAGE TYPE"='FORCED'
-  and "CURTAILMENT START DATE TIME" >= timestamp '2025-01-01'
-  and "CURTAILMENT START DATE TIME" <  timestamp '2026-01-01'
+where "OUTAGE TYPE" in ('FORCED','PLANNED')
+group by "OUTAGE MRID", "OUTAGE TYPE", "CURTAILMENT START DATE TIME"
+""")
+
+# Forced-only, for tightness. No start-date filter: an outage that BEGAN before 2025 but
+# was still active in 2025 must count — the `hours` join below restricts to 2025 hours.
+con.execute("""
+create or replace table outg as
+select rid, rname,
+       date_trunc('hour', ostart_raw) as ostart,
+       oend_filled                    as oend,
+       cmw, pmax, nqc
+from outg_seg
+where otype='FORCED'
+  and oend_filled >= timestamp '2025-01-01'
 """)
 
 con.execute("create or replace table hours as select distinct h from rh order by h")
@@ -477,21 +518,19 @@ log("  building day-sets and scoring candidate matches...")
 # a dedicated outage table that keeps the outage TYPE, then score the
 # fingerprint twice: forced-only, and the merged "unavailable" set
 # (forced OR planned). The dashboard toggles between the two.
-con.execute(f"""
+# Built from the collapsed segments (Stage 1). Clip each segment to the 2025 window so
+# day-expansion stays in-year: outages that began before 2025 (some run for years) are
+# clamped up to Jan 1, and ongoing ones are clamped down to Dec 31 — otherwise
+# build_res_days would emit years of out-of-range days.
+con.execute("""
 create or replace table outg_reid as
-select
-  "RESOURCE ID"   as rid,
-  "RESOURCE NAME" as rname,
-  "OUTAGE TYPE"   as otype,
-  date_trunc('hour', "CURTAILMENT START DATE TIME")                                as ostart,
-  coalesce("CURTAILMENT END DATE TIME", "CURTAILMENT START DATE TIME" + interval 1 hour) as oend,
-  "CURTAILMENT MW"   as cmw,
-  "RESOURCE PMAX MW" as pmax,
-  "NET QUALIFYING CAPACITY MW" as nqc
-from read_parquet('{OUTG}')
-where "OUTAGE TYPE" in ('FORCED','PLANNED')
-  and "CURTAILMENT START DATE TIME" >= timestamp '2025-01-01'
-  and "CURTAILMENT START DATE TIME" <  timestamp '2026-01-01'
+select rid, rname, otype,
+       date_trunc('hour', greatest(ostart_raw, timestamp '2025-01-01')) as ostart,
+       least(oend_filled, timestamp '2025-12-31 23:59:00')              as oend,
+       cmw, pmax, nqc
+from outg_seg
+where oend_filled >= timestamp '2025-01-01'
+  and ostart_raw  <  timestamp '2026-01-01'
 """)
 
 # resource metadata (name / PMAX / NQC / storage tag) from the union of
@@ -1101,7 +1140,7 @@ meta = dict(
         "Screen 1 can define 'how short the grid was' two ways: by outages (how much plant capacity was offline — the original stand-in) or by prices (hours when the day-ahead market price spiked). The price basis uses real day-ahead LMP at the three CAISO trading hubs; the outage basis needs no price data at all.",
         "The real clearing-price impact test (DAM market) measures the capacity a GENERATOR offered ABOVE the price that actually cleared that hour — capacity it effectively withheld from the day-ahead solution — comparing scarce vs. normal hours. It covers generators only (day-ahead demand and intertie bids are excluded, since a load bidding above the price is willingness-to-pay, not withheld supply) and is measured at the system/hub price level because bids carry no node identifier.",
         "There's no fuel-cost data, so 'holding back power' is still judged by comparing each plant to its own behavior in short vs. normal hours — the clearing price sharpens the 'high offer' threshold but does not prove intent.",
-        "When a forced outage has no recorded end time, we treat it as lasting one hour (the typical length).",
+        "Outages come from CAISO's daily 'prior trade date' reports. A row with no end time means the outage was still ongoing as of that report's trade date, so we treat it as active through that date — not a one-hour blip. Outages that began before 2025 but were still active are clipped into the 2025 window, and the same ongoing outage re-listed across many daily reports is collapsed so it is counted once.",
         "Each offer is a set of (amount, price) steps with prices that only go up; a plant's 'capacity' is the largest amount it offered.",
         "Unmasking (Screen 2) matches a bidder's quiet days against a plant's outage days (three methods: forced, forced+planned, magnitude-aware). Each match is cross-checked against the DAY-AHEAD offers: if the bidder also goes quiet in DAM on the plant's outage days, that is a second, market-independent line of evidence.",
     ],
