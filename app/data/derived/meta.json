@@ -4,26 +4,187 @@
   "n_resources": 2445,
   "date_min": "2025-01-01",
   "date_max": "2025-12-31",
+  "datasets": [
+    {
+      "key": "rtm_bids",
+      "name": "Real-time market bids (RTM)",
+      "file": "2025-RTM-BIDS.parquet",
+      "what": "Offers plants submit to sell power in the market that balances supply and demand minute-to-minute. Public, but with plant names stripped to anonymous ID numbers. This is the primary dataset both screens run on.",
+      "stats": [
+        [
+          "Rows (individual price-step offers)",
+          "69,278,338"
+        ],
+        [
+          "Distinct anonymous bidders",
+          "4,245"
+        ],
+        [
+          "\u2026that submit energy offers",
+          "4,245"
+        ],
+        [
+          "Resource types (energy bidders)",
+          "generator 2,510, intertie 1,735, load 9"
+        ],
+        [
+          "Typical energy offer price (median)",
+          "$32/MWh"
+        ],
+        [
+          "Date coverage",
+          "2025-01-01 \u2192 2025-12-31"
+        ]
+      ]
+    },
+    {
+      "key": "dam_bids",
+      "name": "Day-ahead market bids (DAM)",
+      "file": "2025-DAM-BIDS.parquet",
+      "what": "The same kind of offers, but for the market run the day before delivery \u2014 the same market the price data below comes from. Used for the day-ahead view of Screen 1 and the day-ahead cross-check in Screen 2.",
+      "stats": [
+        [
+          "Rows (individual price-step offers)",
+          "17,682,904"
+        ],
+        [
+          "Distinct anonymous bidders",
+          "3,181"
+        ],
+        [
+          "\u2026that submit energy offers",
+          "3,172"
+        ],
+        [
+          "Resource types (energy bidders)",
+          "generator 1,960, intertie 1,086, load 129"
+        ],
+        [
+          "Typical energy offer price (median)",
+          "$26/MWh"
+        ],
+        [
+          "Date coverage",
+          "2025-01-01 \u2192 2025-12-31"
+        ]
+      ]
+    },
+    {
+      "key": "outages",
+      "name": "Generator outages",
+      "file": "2025-OUTAGES.parquet",
+      "what": "A log of when power plants were unavailable \u2014 either an unexpected breakdown (FORCED) or scheduled maintenance (PLANNED) \u2014 and how many megawatts each lost. Screen 1 uses forced outages as one way to gauge when the grid was short; Screen 2 uses the outage calendar to fingerprint anonymous bidders.",
+      "stats": [
+        [
+          "Outage records",
+          "671,196"
+        ],
+        [
+          "Distinct named plants",
+          "1,396"
+        ],
+        [
+          "Forced vs planned records",
+          "641,956 forced / 29,240 planned"
+        ],
+        [
+          "Typical curtailment size (median)",
+          "8 MW"
+        ],
+        [
+          "Date coverage",
+          "2021-05-07 \u2192 2025-12-31"
+        ]
+      ]
+    },
+    {
+      "key": "lmp",
+      "name": "Day-ahead prices (LMP)",
+      "file": "2025-DAM-LMP-full.parquet",
+      "what": "The actual price of electricity, set separately at every point on the grid (a 'Locational Marginal Price'). We track the three regional trading hubs plus their average. This is the real market-price data \u2014 powering the Prices screen and the price-based / clearing-price parts of Screen 1.",
+      "stats": [
+        [
+          "Price observations",
+          "590,182,504"
+        ],
+        [
+          "Distinct pricing locations (nodes)",
+          "17,359"
+        ],
+        [
+          "Trading hubs used here",
+          "SP15, NP15, ZP26 (+ system average)"
+        ],
+        [
+          "Typical system price (median)",
+          "$39/MWh"
+        ],
+        [
+          "Average / peak system price",
+          "$34 / $107/MWh"
+        ],
+        [
+          "Negative-price hours",
+          "590"
+        ],
+        [
+          "Date coverage",
+          "2025-01-01 \u2192 2025-12-31"
+        ]
+      ]
+    }
+  ],
   "thresholds": {
     "elevated_price": 250.0,
     "nearcap_price": 900.0,
     "tight_percentile": 0.9,
     "tight_mw": 15662.7,
+    "price_tight_percentile": 0.9,
+    "price_tight_lmp": 54.4,
     "cap_tolerance_pct": 12.0,
     "min_tight_hours": 200
   },
   "withholding_scored": 1262,
+  "withholding_scored_outage": 1262,
+  "withholding_scored_price": 1325,
+  "withholding_scored_by": {
+    "RTM_outage": 1262,
+    "RTM_price": 1325,
+    "DAM_outage": 581,
+    "DAM_price": 548
+  },
+  "markets": [
+    "RTM",
+    "DAM"
+  ],
+  "price": {
+    "hubs": [
+      "SP15",
+      "NP15",
+      "ZP26"
+    ],
+    "avg_sys_lmp": 34.34,
+    "median_sys_lmp": 38.83,
+    "peak_sys_lmp": 107.43,
+    "neg_price_hours": 590,
+    "price_hours": 8736
+  },
   "reident_candidate_bidders": 324,
   "reident_candidate_bidders_combined": 339,
   "reident_candidate_bidders_magnitude": 469,
   "reident_highconf_links": 232,
   "reident_highconf_links_combined": 250,
   "reident_highconf_links_magnitude": 179,
+  "reident_dam_corroborated": 72,
+  "reident_dam_corroborated_combined": 84,
+  "reident_dam_corroborated_magnitude": 65,
   "assumptions": [
-    "The data doesn't include actual electricity prices, so we use hourly power-plant outages as a stand-in for how short the grid was.",
-    "There's no fuel-cost data, so 'holding back power' is judged by comparing each plant to its own behavior in short vs. normal hours \u2014 not against what the power actually cost to make.",
+    "Screen 1 runs on two bid markets you can toggle: real-time (RTM, the default) and day-ahead (DAM). Because the price data is day-ahead, the DAM market lets Screen 1 compare offers against the ACTUAL day-ahead clearing price \u2014 a real impact test \u2014 while RTM keeps the original design.",
+    "Screen 1 can define 'how short the grid was' two ways: by outages (how much plant capacity was offline \u2014 the original stand-in) or by prices (hours when the day-ahead market price spiked). The price basis uses real day-ahead LMP at the three CAISO trading hubs; the outage basis needs no price data at all.",
+    "The real clearing-price impact test (DAM market) measures the capacity a GENERATOR offered ABOVE the price that actually cleared that hour \u2014 capacity it effectively withheld from the day-ahead solution \u2014 comparing scarce vs. normal hours. It covers generators only (day-ahead demand and intertie bids are excluded, since a load bidding above the price is willingness-to-pay, not withheld supply) and is measured at the system/hub price level because bids carry no node identifier.",
+    "There's no fuel-cost data, so 'holding back power' is still judged by comparing each plant to its own behavior in short vs. normal hours \u2014 the clearing price sharpens the 'high offer' threshold but does not prove intent.",
     "When a forced outage has no recorded end time, we treat it as lasting one hour (the typical length).",
     "Each offer is a set of (amount, price) steps with prices that only go up; a plant's 'capacity' is the largest amount it offered.",
-    "Unmasking (Screen 2) matches a bidder's quiet days against a plant's outage days; you can compare three methods \u2014 forced outages only, forced + planned, or magnitude-aware (which also correlates the size of partial curtailments against how much the bidder scaled back its offers). The 'grid is short' scarcity measure (Screen 1) always uses forced outages only."
+    "Unmasking (Screen 2) matches a bidder's quiet days against a plant's outage days (three methods: forced, forced+planned, magnitude-aware). Each match is cross-checked against the DAY-AHEAD offers: if the bidder also goes quiet in DAM on the plant's outage days, that is a second, market-independent line of evidence."
   ]
 }

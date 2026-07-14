@@ -1,8 +1,9 @@
 # CAISO Market Surveillance Dashboard
 
 An interactive market-auditor tool over the CAISO 2025 Real-Time Market data
-(`../caiso-data/2025-RTM-BIDS.parquet` + `2025-OUTAGES.parquet`). It runs two
-surveillance screens and presents them as clean, slide-ready visuals.
+(`../caiso-data/2025-RTM-BIDS.parquet` + `2025-OUTAGES.parquet`), plus full-year
+day-ahead prices (`2025-DAM-LMP-full.parquet`). It runs two surveillance screens
+and a market-price view, presented as clean, slide-ready visuals.
 
 ## Setup from a fresh clone
 
@@ -15,7 +16,10 @@ cd caiso-bidding-app
 
 # put the raw data files in caiso-data/ (folder is already there with a README):
 #   caiso-data/2025-RTM-BIDS.parquet     (~352 MB — not shippable via GitHub)
+#   caiso-data/2025-DAM-BIDS.parquet     (~130 MB — day-ahead bids; DAM market + impact test)
 #   caiso-data/2025-OUTAGES.parquet      (~5 MB)
+#   caiso-data/2025-DAM-LMP-full.parquet (~3 GB — full-year day-ahead LMP; powers the
+#                                         Prices screen + price-based scarcity)
 
 ./app/run.sh          # builds venv + runs pipeline (first time), then opens the app
 ```
@@ -30,8 +34,10 @@ cd caiso-bidding-app
 caiso-bidding-app/
 ├── caiso-data/              # ← raw inputs go here (gitignored; README placeholder tracked)
 │   ├── README.md
-│   ├── 2025-RTM-BIDS.parquet   (you supply)
-│   └── 2025-OUTAGES.parquet    (you supply)
+│   ├── 2025-RTM-BIDS.parquet       (you supply)
+│   ├── 2025-DAM-BIDS.parquet       (you supply)
+│   ├── 2025-OUTAGES.parquet        (you supply)
+│   └── 2025-DAM-LMP-full.parquet   (you supply)
 └── app/
     ├── pipeline.py
     ├── dashboard.py
@@ -56,20 +62,36 @@ that the dashboard loads instantly from the small derived tables.
 
 ## What it does
 
-Two screens, both **self-contained** — no external cost/price data required:
+Two surveillance screens plus a market-price view:
 
 ### 1. Economic-Withholding / bid-anomaly
-Since the source has **no LMP/clearing price**, we proxy system scarcity with
-**hourly forced-outage MW** (from the outages file). For each resource we compare
-the share of its offered energy priced at/above an *elevated* threshold in
-**tight** hours vs **normal** hours:
+For each resource we compare the share of its offered energy priced at/above an
+*elevated* threshold in **tight** (scarce) hours vs **normal** hours:
 
 > **withholding index = elevated-share(tight) − elevated-share(normal)**
 
 A large positive value = the resource parks capacity at high prices precisely when
 the grid is short — the behavioral signature of economic withholding. It is a
-*conduct screen* (a lead), not proof; confirmation needs an impact test against
-real clearing prices.
+*conduct screen* (a lead), not proof.
+
+Two toggles, stored side by side (`market` + `basis` columns on the withholding tables):
+- **Market** — **RTM** (real-time, default) or **DAM** (day-ahead). Since the LMP is
+  day-ahead, the DAM market is *price-consistent*.
+- **Scarcity basis** — **outage** (hourly forced-outage MW, needs no price data) or
+  **price** (top-decile day-ahead system LMP). A plant flagged under both is a stronger lead.
+
+**Real clearing-price impact test (DAM market).** Because day-ahead offers and
+day-ahead prices are the same market, the DAM view adds `impact_index` /
+`withheld_mwh_tight`: capacity a plant offered *above the price that actually cleared*
+that hour (capacity withheld from the day-ahead solution), and whether it did so more
+when scarce — measured at the system/hub price level (bids carry no node ID). This
+replaces the arbitrary fixed-$ cutoff with the real market price.
+
+### Prices / market conditions
+Day-ahead LMP at the three CAISO trading hubs (SP15/NP15/ZP26) plus their system
+average: daily price by region, a price-duration curve, the energy/congestion/loss
+decomposition, and the priciest hours of the year. This is also the source of the
+price-based scarcity signal used by Screen 1.
 
 ### 2. Re-identification / fingerprinting
 Demonstrates that the anonymization is **reversible** for many resources. Links an
@@ -86,12 +108,17 @@ anonymous `RESOURCEBID_SEQ` to a **named plant** using two public side-channels:
 Result on 2025 data: **232 high-confidence (≥0.60) identity links** across ~150
 named plants.
 
+**Day-ahead cross-check.** Each match is re-scored against the bidder's *day-ahead*
+offers (`phi_dam` / `dam_corroborates` columns): if the bidder also goes quiet in DAM
+on the plant's outage days, that's an independent, second-market line of evidence. Of
+the 250 confident forced+planned links, **85 are day-ahead corroborated**.
+
 ## Architecture
 
 ```
 app/
 ├── pipeline.py         # DuckDB preprocessing: raw parquet -> compact derived tables
-├── dashboard.py        # Streamlit + Plotly UI (4 pages)
+├── dashboard.py        # Streamlit + Plotly UI (5 pages)
 ├── run.sh              # launcher (venv + pipeline + streamlit)
 ├── .streamlit/         # theme
 └── data/derived/       # pre-computed outputs (built by pipeline.py)
@@ -104,18 +131,26 @@ when the raw data changes.
 ### Derived tables
 | file | contents |
 |---|---|
-| `market_hourly/daily.parquet` | offered MW, near-cap share, system tightness |
+| `market_hourly/daily.parquet` | offered MW, near-cap share, outage + price scarcity |
+| `price_hourly.parquet` | hourly hub LMP (SP15/NP15/ZP26/SYS) + energy/congestion/loss |
+| `price_daily.parquet` | daily avg/peak/min LMP + negative-price hours per hub |
 | `product_monthly.parquet` | bid volume by product type |
-| `withholding_resource.parquet` | per-resource withholding index + rank |
-| `withholding_daily.parquet` | daily drill-down for top offenders |
+| `withholding_resource.parquet` | withholding + clearing-price impact index (`market`: RTM/DAM × `basis`: outage/price) |
+| `withholding_daily.parquet` | daily drill-down for top offenders (`market` × `basis`) |
 | `bidder_profiles.parquet` | capacity/storage fingerprint per bidder |
 | `bidder_daily_cap.parquet` | daily offered capacity (drill-down overlay) |
-| `reident_matches.parquet` | candidate anon→named identity links |
+| `reident_matches.parquet` | candidate anon→named links + day-ahead cross-check (`phi_dam`, `dam_corroborates`) |
 | `resource_outage_daily.parquet` | matched plants' outage days (overlay) |
 | `meta.json` | thresholds, coverage, assumptions |
 
 ## Key assumptions (see the in-app "Method & Assumptions" page)
-- No LMP in source → tightness proxied by forced-outage MW.
+- Screen 1 runs on two markets (RTM default, DAM) × two scarcity bases (outage/price),
+  all toggled in the UI. The DAM market is price-consistent with the LMP.
+- DAM impact test = capacity offered above the **actual** day-ahead clearing price when
+  scarce (at system/hub level, since bids carry no node ID) — a real-price sharpening of
+  the fixed-$ conduct index, still a lead not proof.
+- Re-id matches carry a day-ahead cross-check: independent corroboration when the bidder
+  also goes quiet in DAM on the plant's outage days.
 - No fuel/heat-rate data → withholding uses a self-referential (tight-vs-normal) benchmark.
 - Null-ended forced outages treated as 1-hour (empirical median duration).
 - Both screens produce **investigative leads**, not findings of manipulation.
