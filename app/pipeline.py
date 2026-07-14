@@ -29,7 +29,9 @@ os.makedirs(OUT, exist_ok=True)
 os.makedirs(SCRATCH, exist_ok=True)
 
 BIDS = os.path.join(DATA, "2025-RTM-BIDS.parquet")
-DAMB = os.path.join(DATA, "2025-DAM-BIDS.parquet")  # day-ahead bids (same market as the LMP)
+DAMB = os.path.join(
+    DATA, "2025-DAM-BIDS.parquet"
+)  # day-ahead bids (same market as the LMP)
 OUTG = os.path.join(DATA, "2025-OUTAGES.parquet")
 LMP = os.path.join(DATA, "2025-DAM-LMP-full.parquet")  # merged full-year day-ahead LMP
 
@@ -48,8 +50,12 @@ SYS_HUBS = list(HUBS.values())  # "system price" = mean LMP across the three hub
 # ---- tunable thresholds (documented in the dashboard "Method" panel) ----
 THR_ELEV = 250.0  # $/MWh: capacity offered at/above this is "elevated" (well above ~$32 median)
 THR_NEAR = 900.0  # $/MWh: at/above this is "near-cap" ($1000 bid cap) -> classic withholding zone
-TIGHT_PCTL = 0.90  # hours with forced-outage MW above this percentile are "system-tight"
-PRICE_TIGHT_PCTL = 0.90  # hours with system LMP above this percentile are "price-scarce"
+TIGHT_PCTL = (
+    0.90  # hours with forced-outage MW above this percentile are "system-tight"
+)
+PRICE_TIGHT_PCTL = (
+    0.90  # hours with system LMP above this percentile are "price-scarce"
+)
 CAP_TOL = 0.12  # re-ident: |bidder_cap - resource_PMAX| / PMAX must be <= this
 MIN_ELEV_HOURS = 200  # withholding: min tight-hour presence to be scored
 TOP_DRILL = 60  # how many top resources get a stored daily drill-down series
@@ -76,7 +82,9 @@ con.execute(f"PRAGMA temp_directory='{SCRATCH}/duck_tmp'")
 # =====================================================================
 # Stage 0: resource-hour aggregation of ENERGY bids (the workhorse table)
 # =====================================================================
-log("Stage 0: aggregating energy bids to resource-hour grain (this is the heavy step)...")
+log(
+    "Stage 0: aggregating energy bids to resource-hour grain (this is the heavy step)..."
+)
 con.execute(f"""
 create or replace table rh as
 select
@@ -128,7 +136,9 @@ from hours hh
 left join outg o on (hh.h >= o.ostart and hh.h < o.oend)
 group by hh.h
 """)
-tight_thr = con.execute(f"select quantile_cont(tight_mw,{TIGHT_PCTL}) from tight").fetchone()[0]
+tight_thr = con.execute(
+    f"select quantile_cont(tight_mw,{TIGHT_PCTL}) from tight"
+).fetchone()[0]
 log(
     f"  system-tight threshold (P{int(TIGHT_PCTL * 100)} of hourly forced-outage MW): {tight_thr:,.0f} MW"
 )
@@ -315,7 +325,9 @@ copy (
 # For the DAM market the resource-hours also carry `above_clearing_mw`, so the DAM
 # view adds a real clearing-price impact test (capacity offered above the price that
 # would have cleared it) on top of the fixed-$threshold conduct index.
-log("Stage 3: economic-withholding screen (RTM & DAM markets × outage & price bases)...")
+log(
+    "Stage 3: economic-withholding screen (RTM & DAM markets × outage & price bases)..."
+)
 BASES = [("outage", "tight_outage"), ("price", "tight_price")]
 MARKET_RH = [("RTM", "rh"), ("DAM", "rh_dam")]
 
@@ -379,7 +391,9 @@ n_wh_by = {}
 for market, rh_table in MARKET_RH:
     for basis, flagcol in BASES:
         n_wh_by[(market, basis)] = build_wh(market, rh_table, basis, flagcol)
-        log(f"  scored {n_wh_by[(market, basis)]:,} resources — {market} market, {basis} basis")
+        log(
+            f"  scored {n_wh_by[(market, basis)]:,} resources — {market} market, {basis} basis"
+        )
 n_wh = n_wh_by[("RTM", "outage")]  # backward-compatible headline count
 
 # resource-level results for all four (market, basis) combos, ranked within each.
@@ -491,17 +505,25 @@ def name_is_storage(n):
     if not isinstance(n, str):
         return False
     n = n.upper()
-    return any(k in n for k in ("STORAGE", "BATTERY", "BESS", "ENERGY STORAGE", " ES", "_ES"))
+    return any(
+        k in n for k in ("STORAGE", "BATTERY", "BESS", "ENERGY STORAGE", " ES", "_ES")
+    )
 
 
 res_meta = {}
-for rid, rname, pmax, nqc in res_intervals[["rid", "rname", "pmax", "nqc"]].itertuples(index=False):
-    res_meta[rid] = dict(rname=rname, pmax=pmax, nqc=nqc, storage=name_is_storage(rname))
+for rid, rname, pmax, nqc in res_intervals[["rid", "rname", "pmax", "nqc"]].itertuples(
+    index=False
+):
+    res_meta[rid] = dict(
+        rname=rname, pmax=pmax, nqc=nqc, storage=name_is_storage(rname)
+    )
 
 
 # expand outage intervals to daily coverage, split by type
 def build_res_days(where_clause):
-    rows = con.execute(f"select rid, ostart, oend from outg_reid {where_clause}").fetchdf()
+    rows = con.execute(
+        f"select rid, ostart, oend from outg_reid {where_clause}"
+    ).fetchdf()
     rd = defaultdict(set)
     for rid, s, e in rows.itertuples(index=False):
         d0 = pd.Timestamp(s).normalize()
@@ -543,8 +565,12 @@ span_len = {
     b.res: (pd.Timestamp(b.last_day) - pd.Timestamp(b.first_day)).days + 1
     for b in bidder.itertuples(index=False)
 }
-span_first = {b.res: pd.Timestamp(b.first_day).date() for b in bidder.itertuples(index=False)}
-span_last = {b.res: pd.Timestamp(b.last_day).date() for b in bidder.itertuples(index=False)}
+span_first = {
+    b.res: pd.Timestamp(b.first_day).date() for b in bidder.itertuples(index=False)
+}
+span_last = {
+    b.res: pd.Timestamp(b.last_day).date() for b in bidder.itertuples(index=False)
+}
 
 # ---------------------------------------------------------------------
 # DAM CROSS-CHECK structures: the same went-quiet dip-day logic applied to the
@@ -552,14 +578,18 @@ span_last = {b.res: pd.Timestamp(b.last_day).date() for b in bidder.itertuples(i
 # if the bidder ALSO goes quiet in the day-ahead market on the candidate plant's
 # outage days, that is a second, market-independent line of evidence.
 # ---------------------------------------------------------------------
-bday_dam = con.execute("select res, day, max(cap) cap from rh_dam group by res, day").fetchdf()
+bday_dam = con.execute(
+    "select res, day, max(cap) cap from rh_dam group by res, day"
+).fetchdf()
 bidder_dam = con.execute(
     "select res, min(day) first_day, max(day) last_day from rh_dam group by res"
 ).fetchdf()
 present_cap_dam = defaultdict(dict)
 for res, day, cap in bday_dam.itertuples(index=False):
     present_cap_dam[res][pd.Timestamp(day).date()] = cap
-bref_dam = {res: float(np.median(list(c.values()))) for res, c in present_cap_dam.items()}
+bref_dam = {
+    res: float(np.median(list(c.values()))) for res, c in present_cap_dam.items()
+}
 dam_span = {
     r.res: (
         pd.Timestamp(r.first_day).date(),
@@ -587,13 +617,19 @@ for res, (d0, d1, _N) in dam_span.items():
 # less — invisible to the binary dip test, but caught by this graded signal.
 # ---------------------------------------------------------------------
 # Plant: fraction of PMAX curtailed each day (forced OR planned), max concurrent.
-oc = con.execute("select rid, ostart, oend, cmw, pmax from outg_reid where pmax > 0").fetchdf()
+oc = con.execute(
+    "select rid, ostart, oend, cmw, pmax from outg_reid where pmax > 0"
+).fetchdf()
 res_curt_frac = defaultdict(dict)  # rid -> {day: curtailed_fraction in (0,1]}
-res_curt_mw = defaultdict(dict)  # rid -> {day: max concurrent curtailment MW}  (for hover)
+res_curt_mw = defaultdict(
+    dict
+)  # rid -> {day: max concurrent curtailment MW}  (for hover)
 for rid, s, e, cmw, pmax in oc.itertuples(index=False):
     mw = float(cmw) if cmw is not None else 0.0
     f = min(1.0, mw / pmax) if pmax else 0.0
-    for d in pd.date_range(pd.Timestamp(s).normalize(), pd.Timestamp(e).normalize(), freq="D"):
+    for d in pd.date_range(
+        pd.Timestamp(s).normalize(), pd.Timestamp(e).normalize(), freq="D"
+    ):
         dd = d.date()
         if mw > res_curt_mw[rid].get(dd, -1.0):
             res_curt_mw[rid][dd] = mw
@@ -609,12 +645,17 @@ for b in bidder.itertuples(index=False):
         continue
     dd = [
         d.date()
-        for d in pd.date_range(pd.Timestamp(b.first_day), pd.Timestamp(b.last_day), freq="D")
+        for d in pd.date_range(
+            pd.Timestamp(b.first_day), pd.Timestamp(b.last_day), freq="D"
+        )
     ]
     caps = present_cap.get(b.res, {})
     span_days[b.res] = dd
     bidder_reduction[b.res] = np.array(
-        [1.0 if caps.get(x) is None else float(np.clip(1 - caps[x] / typ, 0.0, 1.0)) for x in dd]
+        [
+            1.0 if caps.get(x) is None else float(np.clip(1 - caps[x] / typ, 0.0, 1.0))
+            for x in dd
+        ]
     )
 
 
@@ -719,7 +760,9 @@ def run_reident(res_days, magnitude=False):
             rho, n_curt = float("nan"), 0
             if magnitude and sdays is not None:
                 cf = res_curt_frac.get(rid, {})
-                xarr = np.fromiter((cf.get(dd, 0.0) for dd in sdays), dtype=float, count=len(sdays))
+                xarr = np.fromiter(
+                    (cf.get(dd, 0.0) for dd in sdays), dtype=float, count=len(sdays)
+                )
                 n_curt = int(np.count_nonzero(xarr))
                 if n_curt >= 10:  # balanced guard: enough curtailment days
                     rho = spearman(xarr, yred)
@@ -810,7 +853,20 @@ con.execute(f"""
 copy (select r.res, r.h, r.cap from rh r join mres_df using (res) order by r.res, r.h)
 to '{OUT}/bidder_hourly_cap.parquet' (format parquet)
 """)
-log(f"  hourly cap series written for {len(matched_res):,} matched bidders")
+# day-ahead (DAM) counterpart of the same series, so the fingerprint drill-down can
+# show the bidder's went-quiet pattern in BOTH markets side by side. Same matched
+# bidders; a bidder with no DAM offers simply has no rows here.
+con.execute(f"""
+copy (select r.res, r.h, r.cap from rh_dam r join mres_df using (res) order by r.res, r.h)
+to '{OUT}/bidder_hourly_cap_dam.parquet' (format parquet)
+""")
+n_dam_cap = con.execute(
+    "select count(distinct res) from rh_dam r join mres_df using (res)"
+).fetchone()[0]
+log(
+    f"  hourly cap series written for {len(matched_res):,} matched bidders "
+    f"(RTM); {n_dam_cap:,} of them also have DAM offers"
+)
 
 
 def highconf(mdf):
@@ -824,7 +880,9 @@ hc_forced, hc_comb, hc_mag = (
     highconf(mdf_combined),
     highconf(mdf_magnitude),
 )
-log(f"  fingerprint-able bidders: forced={fp_forced:,}, combined={fp_comb:,}, magnitude={fp_mag:,}")
+log(
+    f"  fingerprint-able bidders: forced={fp_forced:,}, combined={fp_comb:,}, magnitude={fp_mag:,}"
+)
 log(
     f"  high-confidence (>=0.60) links: forced={hc_forced:,}, combined={hc_comb:,} (+{hc_comb - hc_forced}), "
     f"magnitude={hc_mag:,} (+{hc_mag - hc_forced} vs forced)"
@@ -992,7 +1050,9 @@ select count(distinct res) n_res, min(day) tmin, max(day) tmax from rh
 """).fetchone()
 meta = dict(
     generated_scope="CAISO RTM 2025 (full year)",
-    n_bid_rows=int(con.execute(f"select count(*) from read_parquet('{BIDS}')").fetchone()[0]),
+    n_bid_rows=int(
+        con.execute(f"select count(*) from read_parquet('{BIDS}')").fetchone()[0]
+    ),
     n_resources=int(overview[0]),
     date_min=str(overview[1]),
     date_max=str(overview[2]),
@@ -1021,7 +1081,9 @@ meta = dict(
         neg_price_hours=int(price_stats[3]),
         price_hours=int(price_stats[4]),
     ),
-    reident_candidate_bidders=int(mdf_forced["res"].nunique()) if len(mdf_forced) else 0,
+    reident_candidate_bidders=int(mdf_forced["res"].nunique())
+    if len(mdf_forced)
+    else 0,
     reident_candidate_bidders_combined=int(mdf_combined["res"].nunique())
     if len(mdf_combined)
     else 0,
