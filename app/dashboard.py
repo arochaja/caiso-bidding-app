@@ -18,8 +18,8 @@ import os
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from plotly.subplots import make_subplots
 from auth import require_login
+from plotly.subplots import make_subplots
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DER = os.path.join(HERE, "data", "derived")
@@ -141,9 +141,7 @@ def style(fig, height=360, legend=True, ytitle=None, xtitle=None):
         height=height,
         paper_bgcolor=SURF,
         plot_bgcolor=SURF,
-        font=dict(
-            family="system-ui,-apple-system,Segoe UI,sans-serif", color=INK2, size=13
-        ),
+        font=dict(family="system-ui,-apple-system,Segoe UI,sans-serif", color=INK2, size=13),
         margin=dict(l=10, r=16, t=30, b=10),
         legend=dict(
             orientation="h",
@@ -203,6 +201,7 @@ PAGE = st.sidebar.radio(
     [
         "Overview",
         "Prices · What power cost",
+        "Demand · Who wanted power",
         "Screen 1 · Holding back power",
         "Screen 2 · Unmasking bidders",
         "How this works & caveats",
@@ -348,12 +347,7 @@ if PAGE == "Overview":
     )
     pm = load("product_monthly.parquet")
     pm["month"] = pd.to_datetime(pm["month"])
-    order = (
-        pm.groupby("product")["n_bids"]
-        .sum()
-        .sort_values(ascending=False)
-        .index.tolist()
-    )
+    order = pm.groupby("product")["n_bids"].sum().sort_values(ascending=False).index.tolist()
     fig = go.Figure()
     for i, prod in enumerate(order[:8]):
         d = pm[pm["product"] == prod]
@@ -376,18 +370,17 @@ if PAGE == "Overview":
 elif PAGE == "Prices · What power cost":
     st.markdown("## What power actually cost")
     st.caption(
-        "The real day-ahead price of electricity across California in 2025, at the three "
-        "CAISO **trading hubs**. This is the market's own scarcity signal — and it now powers a "
-        "price-based version of Screen 1 (see the toggle there)."
+        "The real price of electricity across California in 2025, at the three CAISO "
+        "**trading hubs** — in both markets: the **day-ahead** price set the day before, and "
+        "the **real-time** price the grid actually settled at every 5 minutes. Their gap is the "
+        "market's own scarcity signal — and each now powers a version of Screen 1 (see the toggle there)."
     )
 
     if not have("price_hourly.parquet"):
         st.warning("No price data available. Re-run `python pipeline.py`.")
         st.stop()
 
-    with st.expander(
-        "What is a 'locational price' (LMP)?  — in plain terms", expanded=False
-    ):
+    with st.expander("What is a 'locational price' (LMP)?  — in plain terms", expanded=False):
         st.markdown("""
 The grid operator sets a separate electricity price at every point on the network — a **Locational Marginal Price (LMP)**, in dollars per megawatt-hour. Each hub price is really three parts added together:
 
@@ -395,42 +388,73 @@ The grid operator sets a separate electricity price at every point on the networ
 - **Congestion** — an add-on (or discount) when the transmission lines to that area are full. This is what makes Northern and Southern California prices diverge.
 - **Losses** — a small adjustment for power lost as heat over the wires (usually slightly negative).
 
-We track three regional **hubs** — **SP15** (south), **NP15** (north), **ZP26** (central) — plus their average as a single "system" price. When that system price spikes into its top 10% of hours, we call it **price-scarce** — the price-based cousin of the outage-based "grid is short" signal.
+There are two prices for every hour. The **day-ahead (DAM)** price is set the afternoon before, one value per hour. The **real-time (RTM)** price is set every **5 minutes** as the grid actually balances — so it spikes far higher and dips far lower than the smooth day-ahead value. We track three regional **hubs** — **SP15** (south), **NP15** (north), **ZP26** (central) — plus their average as a single "system" price. When a system price spikes into its top 10% of hours, we call it **price-scarce** — the price-based cousin of the outage-based "grid is short" signal.
 """)
 
     p = META.get("price", {})
     thr = META["thresholds"]
+
+    market_label = st.radio(
+        "Market",
+        ["Day-ahead (DAM)", "Real-time (RTM)"],
+        horizontal=True,
+        help="Day-ahead is the price locked in the day before (one value per hour). "
+        "Real-time is what the grid actually settled at, every 5 minutes — far spikier. "
+        "The 'day-ahead vs real-time' section below always shows both.",
+    )
+    mkt = "DAM" if market_label.startswith("Day") else "RTM"
+    # market-specific headline stats (RTM keys mirror the DAM ones in meta)
+    stat = (
+        dict(
+            median=p.get("median_sys_lmp", 0),
+            peak=p.get("peak_sys_lmp", 0),
+            neg=p.get("neg_price_hours", 0),
+            line=thr.get("price_tight_lmp", 0),
+        )
+        if mkt == "DAM"
+        else dict(
+            median=p.get("rtm_median_sys_lmp", 0),
+            peak=p.get("rtm_peak_sys_lmp", 0),
+            neg=p.get("rtm_neg_price_hours", 0),
+            line=thr.get("price_tight_lmp_rtm", 0),
+        )
+    )
     c = st.columns(4)
     kpi(
         c[0],
         "Typical power price",
-        f"${p.get('median_sys_lmp', 0):.0f}/MWh",
-        "median system price across the year",
+        f"${stat['median']:.0f}/MWh",
+        f"median system {market_label.split()[0].lower()} price across the year",
     )
     kpi(
         c[1],
         "Highest hour",
-        f"${p.get('peak_sys_lmp', 0):.0f}/MWh",
-        "priciest system hour in 2025",
+        f"${stat['peak']:.0f}/MWh",
+        "priciest system hour in 2025 (real-time peaks dwarf day-ahead)"
+        if mkt == "RTM"
+        else "priciest system hour in 2025",
         tone="serious",
     )
     kpi(
         c[2],
         "Negative-price hours",
-        f"{p.get('neg_price_hours', 0):,}",
+        f"{stat['neg']:,}",
         "hours power was so plentiful the price went below zero",
     )
     kpi(
         c[3],
         "'Price-scarce' line",
-        f"${thr.get('price_tight_lmp', 0):.0f}/MWh",
-        f"top {int((1 - thr.get('price_tight_percentile', 0.9)) * 100)}% of hours by price",
+        f"${stat['line']:.0f}/MWh",
+        f"top {int((1 - thr.get('price_tight_percentile', 0.9)) * 100)}% of hours by {mkt} price",
     )
 
     pd_daily = load("price_daily.parquet")
     pd_daily["day"] = pd.to_datetime(pd_daily["day"])
     ph = load("price_hourly.parquet")
     ph["h"] = pd.to_datetime(ph["h"])
+    # views below follow the market toggle; the DAM-vs-RTM section uses both
+    pdm = pd_daily[pd_daily["market"] == mkt]
+    phm = ph[ph["market"] == mkt]
 
     left, right = st.columns([3, 2])
     with left:
@@ -441,7 +465,7 @@ We track three regional **hubs** — **SP15** (south), **NP15** (north), **ZP26*
         )
         fig = go.Figure()
         for hub in ["SP15", "NP15", "ZP26"]:
-            d = pd_daily[pd_daily["hub"] == hub]
+            d = pdm[pdm["hub"] == hub]
             fig.add_trace(
                 go.Scatter(
                     x=d["day"],
@@ -466,11 +490,7 @@ We track three regional **hubs** — **SP15** (south), **NP15** (north), **ZP26*
             "Every hour of the year, sorted priciest-first. The steep tail on the left is scarcity; "
             "the dip below zero on the right is oversupply.",
         )
-        s = (
-            ph[ph["hub"] == hubsel]["lmp"]
-            .sort_values(ascending=False)
-            .reset_index(drop=True)
-        )
+        s = phm[phm["hub"] == hubsel]["lmp"].sort_values(ascending=False).reset_index(drop=True)
         pctile = (s.index + 1) / len(s) * 100 if len(s) else s.index
         fig = go.Figure()
         fig.add_trace(
@@ -486,15 +506,13 @@ We track three regional **hubs** — **SP15** (south), **NP15** (north), **ZP26*
             )
         )
         fig.add_hline(
-            y=thr.get("price_tight_lmp", 0),
+            y=stat["line"],
             line=dict(color=STATUS["serious"], width=1, dash="dot"),
-            annotation_text=f"price-scarce line ${thr.get('price_tight_lmp', 0):.0f}",
+            annotation_text=f"price-scarce line ${stat['line']:.0f}",
             annotation_font_color=MUTED,
             annotation_font_size=11,
         )
-        style(
-            fig, height=360, legend=False, xtitle="share of hours (%)", ytitle="$/MWh"
-        )
+        style(fig, height=360, legend=False, xtitle="share of hours (%)", ytitle="$/MWh")
         st.plotly_chart(fig, use_container_width=True)
 
     section(
@@ -502,7 +520,7 @@ We track three regional **hubs** — **SP15** (south), **NP15** (north), **ZP26*
         "The system price split into its three parts. Energy dominates; the small congestion and "
         "loss pieces are what make one region differ from another.",
     )
-    phs = ph[ph["hub"] == "SYS"].copy()
+    phs = phm[phm["hub"] == "SYS"].copy()
     phs["month"] = phs["h"].dt.to_period("M").dt.to_timestamp()
     comp = phs.groupby("month")[["energy", "congestion", "loss"]].mean().reset_index()
     fig = go.Figure()
@@ -524,9 +542,167 @@ We track three regional **hubs** — **SP15** (south), **NP15** (north), **ZP26*
     style(fig, height=320, ytitle="$/MWh (monthly average)")
     st.plotly_chart(fig, use_container_width=True)
 
+    # -----------------------------------------------------------------
+    # NEW: day-ahead vs real-time — the spread
+    # -----------------------------------------------------------------
+    section(
+        "Day-ahead vs real-time: the spread",
+        "The day-ahead price is a forecast locked in the afternoon before; the real-time price is "
+        "what the grid actually settled at. When real-time runs far above day-ahead, the grid was "
+        "tighter than the market expected — the classic signal that supply was scarce (or withheld).",
+    )
+    sys_dam = pd_daily[(pd_daily["market"] == "DAM") & (pd_daily["hub"] == "SYS")][
+        ["day", "avg_lmp"]
+    ].rename(columns={"avg_lmp": "DAM"})
+    sys_rtm = pd_daily[(pd_daily["market"] == "RTM") & (pd_daily["hub"] == "SYS")][
+        ["day", "avg_lmp"]
+    ].rename(columns={"avg_lmp": "RTM"})
+    sp = sys_dam.merge(sys_rtm, on="day", how="inner")
+    sp["spread"] = sp["RTM"] - sp["DAM"]
+
+    sc = st.columns(3)
+    kpi(
+        sc[0],
+        "Real-time vs day-ahead",
+        f"{p.get('spread_mean', 0):+.1f} $/MWh",
+        "average gap (real-time minus day-ahead) across the year — near zero when the "
+        "forecast is good",
+    )
+    kpi(
+        sc[1],
+        "Day-to-day swing",
+        f"±${p.get('spread_sd', 0):.0f}/MWh",
+        "standard deviation of the gap — how far real-time routinely departs from day-ahead",
+    )
+    kpi(
+        sc[2],
+        "Biggest single-hour gap",
+        f"+${p.get('spread_max', 0):.0f}/MWh",
+        "the hour real-time most exceeded day-ahead — a real-time scarcity spike the "
+        "day-ahead price never saw",
+        tone="serious",
+    )
+
+    fig = make_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        row_heights=[0.62, 0.38],
+        vertical_spacing=0.07,
+        subplot_titles=(
+            "Daily average system price — both markets",
+            "Daily mean spread (real-time minus day-ahead)",
+        ),
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=sp["day"],
+            y=sp["DAM"],
+            mode="lines",
+            name="Day-ahead (DAM)",
+            line=dict(color=BLUE, width=1.6),
+            hovertemplate="Day-ahead<br>%{x|%b %d}: $%{y:.0f}/MWh<extra></extra>",
+        ),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=sp["day"],
+            y=sp["RTM"],
+            mode="lines",
+            name="Real-time (RTM)",
+            line=dict(color=RED, width=1.6),
+            hovertemplate="Real-time<br>%{x|%b %d}: $%{y:.0f}/MWh<extra></extra>",
+        ),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(
+        go.Bar(
+            x=sp["day"],
+            y=sp["spread"],
+            name="Spread",
+            showlegend=False,
+            marker_color=[STATUS["serious"] if v >= 0 else BLUE for v in sp["spread"]],
+            hovertemplate="%{x|%b %d}: %{y:+.0f} $/MWh<extra></extra>",
+        ),
+        row=2,
+        col=1,
+    )
+    fig.add_hline(y=0, line=dict(color=MUTED, width=1), row=2, col=1)
+    style(fig, height=460)
+    fig.update_yaxes(title_text="$/MWh", title_font=dict(size=12), row=1, col=1)
+    fig.update_yaxes(title_text="spread $/MWh", title_font=dict(size=12), row=2, col=1)
+    for ann in fig.layout.annotations:
+        ann.font.size = 12
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption(
+        "Orange bars = real-time ran richer than day-ahead (grid tighter than forecast); "
+        "blue bars = real-time came in cheaper (oversupply). The tallest orange spikes are the "
+        "days worth pairing against the withholding screen."
+    )
+
+    # -----------------------------------------------------------------
+    # NEW: intraday volatility (5-minute real-time)
+    # -----------------------------------------------------------------
+    if have("rtm_5min.parquet"):
+        section(
+            "Inside a single day: the 5-minute real-time price",
+            "The day-ahead price is one flat step per hour. Real-time re-prices every 5 minutes — so "
+            "a calm day-ahead forecast can hide violent intraday swings. Pick one of the year's most "
+            "volatile days to see the gap.",
+        )
+        r5 = load("rtm_5min.parquet")
+        r5["ts"] = pd.to_datetime(r5["ts"])
+        r5sys = r5[r5["hub"] == "SYS"].copy()
+        r5sys["d"] = r5sys["ts"].dt.date
+        rng = (
+            r5sys.groupby("d")["lmp"].agg(lambda s: s.max() - s.min()).sort_values(ascending=False)
+        )
+        top_days = list(rng.head(10).index)
+        daysel = st.selectbox(
+            "Volatile day to inspect",
+            top_days,
+            format_func=lambda d: f"{d:%b %d}  —  swing ${rng[d]:.0f}/MWh",
+        )
+        oneday = r5sys[r5sys["d"] == daysel].sort_values("ts")
+        dam_day = ph[
+            (ph["market"] == "DAM") & (ph["hub"] == "SYS") & (ph["h"].dt.date == daysel)
+        ].sort_values("h")
+        fig = go.Figure()
+        fig.add_trace(
+            go.Scatter(
+                x=oneday["ts"],
+                y=oneday["lmp"],
+                mode="lines",
+                name="Real-time (5-min)",
+                line=dict(color=RED, width=1.6, shape="hv"),
+                hovertemplate="Real-time<br>%{x|%H:%M}: $%{y:.0f}/MWh<extra></extra>",
+            )
+        )
+        if len(dam_day):
+            fig.add_trace(
+                go.Scatter(
+                    x=dam_day["h"],
+                    y=dam_day["lmp"],
+                    mode="lines",
+                    name="Day-ahead (hourly)",
+                    line=dict(color=BLUE, width=1.6, dash="dot", shape="hv"),
+                    hovertemplate="Day-ahead<br>%{x|%H:%M}: $%{y:.0f}/MWh<extra></extra>",
+                )
+            )
+        style(fig, height=340, ytitle="$/MWh")
+        st.plotly_chart(fig, use_container_width=True)
+        st.caption(
+            "On a typical hour the real-time price moves only about **$6**/MWh across its "
+            "five-minute intervals, but on days like this it can span more than **$1,000**/MWh — "
+            "swings the once-a-day day-ahead price cannot represent."
+        )
+
     with st.expander("The 25 priciest hours of the year (and download all prices)"):
         top = (
-            ph[ph["hub"] == "SYS"]
+            phm[phm["hub"] == "SYS"]
             .nlargest(25, "lmp")[["h", "lmp", "energy", "congestion", "loss"]]
             .copy()
         )
@@ -540,13 +716,202 @@ We track three regional **hubs** — **SP15** (south), **NP15** (north), **ZP26*
             }
         )
         st.dataframe(top, width="stretch", height=320, hide_index=True)
-        st.caption(
-            "Hourly hub prices — SP15, NP15, ZP26 and the system average — for all of 2025."
-        )
+        st.caption("Hourly hub prices — SP15, NP15, ZP26 and the system average — for all of 2025.")
         st.download_button(
             "⬇ Download hourly prices (CSV)",
             ph.to_csv(index=False),
             "caiso_hub_lmp_2025.csv",
+            "text/csv",
+        )
+
+# =====================================================================
+# PAGE — DEMAND SIDE (who wanted power, vs how thin supply was)
+# =====================================================================
+elif PAGE == "Demand · Who wanted power":
+    st.markdown("## Who wanted power — and when supply ran thin")
+    st.caption(
+        "The other half of the market: the **demand** side. Buyers (utilities and load-serving "
+        "entities) bid to *purchase* power hour by hour. This panel tracks how much demand was "
+        "bid across 2025, and lays it against how short **supply** got — the two forces that set "
+        "the price."
+    )
+
+    if not have("demand_daily.parquet"):
+        st.warning("No demand data available. Re-run `python pipeline.py`.")
+        st.stop()
+
+    market_label = st.radio(
+        "Market",
+        ["Day-ahead (DAM)", "Real-time (RTM)"],
+        horizontal=True,
+        help="Demand is set in the day-ahead market. Real-time demand is barely re-bid, so the "
+        "RTM view is near-empty by design — shown for completeness.",
+    )
+    market = "DAM" if market_label.startswith("Day-ahead") else "RTM"
+
+    with st.expander("How to read this panel — in plain terms", expanded=False):
+        st.markdown("""
+Every hour, buyers submit **demand bids** to CAISO — how many megawatts they want and the most they'll pay. Those bids come in two flavours:
+
+- **Must-take (self-scheduled)** — a fixed quantity the buyer wants *regardless of price*. Price-insensitive load.
+- **Price-responsive (economic)** — a demand *curve*: buy more when power is cheap, less when it's dear. This is the demand that can actually flex.
+
+We add both up across every buyer to get the system's **demand bid** each hour, then chart each day's **peak** (the tightest demand hour) across the year.
+
+On the same timeline we overlay **supply tightness** — the most plant capacity forced offline at once that day (the same scarcity signal the screens use). Where a high demand day meets a thin-supply day is where prices are most likely to move.
+""")
+
+    dd = load("demand_daily.parquet")
+    dd = dd[dd["market"] == market].copy()
+    dd["day"] = pd.to_datetime(dd["day"])
+    dd = dd.sort_values("day")
+
+    md = load("market_daily.parquet")
+    md["day"] = pd.to_datetime(md["day"])
+
+    if market == "RTM":
+        st.info(
+            "**Demand is a day-ahead activity.** In real time, load is essentially carried over "
+            "from the day-ahead schedule and barely re-bid — so real-time demand bids average only "
+            f"~{dd['demand_avg_mw'].mean() / 1000:.1f} GW versus ~"
+            f"{META.get('demand', {}).get('dam_avg_mw', 0) / 1000:.1f} GW day-ahead. This view is "
+            "shown for completeness; the day-ahead market is where demand really lives."
+        )
+
+    peak_dem = dd["demand_peak_mw"].max()
+    avg_dem = dd["demand_avg_mw"].mean()
+    mt_share = (
+        dd["self_avg_mw"].mean() / dd["demand_avg_mw"].mean() * 100
+        if dd["demand_avg_mw"].mean()
+        else 0
+    )
+    peak_tight = md["peak_tight_mw"].max() / 1000
+
+    c = st.columns(4)
+    kpi(
+        c[0],
+        "Peak demand bid",
+        f"{peak_dem / 1000:.1f} GW",
+        "most demand bid in a single hour",
+    )
+    kpi(
+        c[1],
+        "Typical demand bid",
+        f"{avg_dem / 1000:.1f} GW",
+        "average across all hours of the year",
+    )
+    kpi(
+        c[2],
+        "Must-take share",
+        f"{mt_share:.0f}%",
+        "demand that ignores price (self-scheduled)",
+    )
+    kpi(
+        c[3],
+        "Thinnest supply",
+        f"{peak_tight:.1f} GW",
+        "most capacity offline at once (1 GW ≈ 750k homes)",
+    )
+
+    st.markdown("")
+    section(
+        "Demand bid vs. how thin supply got",
+        "Blue is each day's **peak demand bid** (left axis). Orange is that day's **supply "
+        "tightness** — the most capacity forced offline at once (right axis). When a tall blue "
+        "day lines up with a tall orange day, buyers were competing for the scarcest supply.",
+    )
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    fig.add_trace(
+        go.Scatter(
+            x=dd["day"],
+            y=dd["demand_peak_mw"] / 1000,
+            mode="lines",
+            name="Peak demand bid",
+            line=dict(color=BLUE, width=2),
+            fill="tozeroy",
+            fillcolor="rgba(42,120,214,0.10)",
+            hovertemplate="%{x|%b %d}<br>Peak demand bid: %{y:.1f} GW<extra></extra>",
+        ),
+        secondary_y=False,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=md["day"],
+            y=md["peak_tight_mw"] / 1000,
+            mode="lines",
+            name="Supply offline (tightness)",
+            line=dict(color=ORANGE, width=1.6),
+            hovertemplate="%{x|%b %d}<br>Capacity offline: %{y:.1f} GW<extra></extra>",
+        ),
+        secondary_y=True,
+    )
+    style(fig, height=380)
+    fig.update_yaxes(title_text="Peak demand bid (GW)", secondary_y=False)
+    fig.update_yaxes(
+        title_text="Supply offline (GW)",
+        secondary_y=True,
+        showgrid=False,
+        color=MUTED,
+        title_font=dict(size=12),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("")
+    left, right = st.columns([3, 2])
+    with left:
+        section(
+            "What kind of demand was it?",
+            "Splitting each day's average demand into **price-responsive** (buyers who back off "
+            "when power gets expensive) and **must-take** (a fixed quantity bought at any price). "
+            "Price-responsive demand is the part of the market that can actually flex to relieve a "
+            "price spike.",
+        )
+        fig2 = go.Figure()
+        fig2.add_trace(
+            go.Scatter(
+                x=dd["day"],
+                y=dd["self_avg_mw"] / 1000,
+                mode="lines",
+                name="Must-take (self-scheduled)",
+                line=dict(color=MUTED, width=0),
+                stackgroup="d",
+                fillcolor="rgba(137,135,129,0.45)",
+                hovertemplate="%{x|%b %d}<br>Must-take: %{y:.2f} GW<extra></extra>",
+            )
+        )
+        fig2.add_trace(
+            go.Scatter(
+                x=dd["day"],
+                y=dd["econ_avg_mw"] / 1000,
+                mode="lines",
+                name="Price-responsive (economic)",
+                line=dict(color=AQUA, width=0),
+                stackgroup="d",
+                fillcolor="rgba(27,175,122,0.55)",
+                hovertemplate="%{x|%b %d}<br>Price-responsive: %{y:.2f} GW<extra></extra>",
+            )
+        )
+        style(fig2, height=340, ytitle="GW (daily average)")
+        st.plotly_chart(fig2, use_container_width=True)
+    with right:
+        section(
+            "The takeaway",
+            None,
+        )
+        st.markdown(
+            f"""
+Across the year, **{mt_share:.0f}%** of day-ahead demand was **must-take** — bought no matter
+the price. The remaining **{100 - mt_share:.0f}%** was **price-responsive**, the sliver of demand
+that can ease off when supply is short.
+
+A grid where so little demand flexes leans hard on the **supply** side to keep prices in
+check — which is exactly why the withholding screens focus there.
+"""
+        )
+        st.download_button(
+            "⬇ Download daily demand (CSV)",
+            dd.to_csv(index=False),
+            f"caiso_demand_daily_{market.lower()}_2025.csv",
             "text/csv",
         )
 
@@ -577,16 +942,29 @@ elif PAGE == "Screen 1 · Holding back power":
         )
     market = "DAM" if market_label.startswith("Day-ahead") else "RTM"
     with basis_col:
+        _basis_opts = {
+            "Outages (capacity offline)": "outage",
+            "Day-ahead price spikes": "price",
+            "Real-time price spikes": "price_rtm",
+        }
+        # keys look like "RTM_outage" / "DAM_price_rtm" — basis is everything after
+        # the market prefix. Only offer bases actually present in the derived data.
+        _scored_bases = {k.split("_", 1)[1] for k in META.get("withholding_scored_by", {})}
+        _basis_labels = [
+            lbl for lbl, b in _basis_opts.items() if not _scored_bases or b in _scored_bases
+        ]
         basis_label = st.radio(
             "Measure 'when the grid is short' by…",
-            ["Outages (capacity offline)", "Prices (market price spikes)"],
+            _basis_labels,
             index=0,
             horizontal=True,
             help="Outages: hours with the most plant capacity offline (needs no price data). "
-            "Prices: hours when the day-ahead market price was in its top 10% — the real scarcity signal. "
-            "Scores differ because the two define 'short' differently.",
+            "Day-ahead price spikes: top 10% of hours by the day-ahead market price. "
+            "Real-time price spikes: top 10% of hours by the 5-minute real-time price — catches "
+            "intra-hour scarcity the day-ahead price flattens. Scores differ because each defines "
+            "'short' differently.",
         )
-    basis = "price" if basis_label.startswith("Prices") else "outage"
+    basis = _basis_opts[basis_label]
 
     with st.expander("How this screen works — in plain terms", expanded=False):
         n_scored = META.get("withholding_scored_by", {}).get(
@@ -605,6 +983,13 @@ elif PAGE == "Screen 1 · Holding back power":
                 f"**highest day-ahead price** (system price at or above **\\${t.get('price_tight_lmp', 0):.0f}/MWh**). "
                 "This is the market's own scarcity signal — see the **Prices** screen."
             )
+        elif basis == "price_rtm":
+            short_def = (
+                f"the {int((1 - t.get('price_tight_percentile', 0.9)) * 100)}% of hours with the "
+                f"**highest real-time price** (5-minute system price averaged to the hour at or above "
+                f"**\\${t.get('price_tight_lmp_rtm', 0):.0f}/MWh**). Real-time captures intra-hour scarcity "
+                "spikes the day-ahead price flattens — see the **Prices** screen."
+            )
         else:
             short_def = (
                 f"the {int((1 - t['tight_percentile']) * 100)}% of hours with the most plant capacity "
@@ -621,7 +1006,7 @@ The idea: a plant gaming the market will price its power very high **especially 
 - **Withholding score = (high-priced share when short) − (high-priced share when normal).** A big positive number means the plant pushes prices up precisely when the grid can least afford it.
 - *Worked example:* a plant prices **20%** of its power steeply high in normal hours but **60%** when the grid is short → score = 0.60 − 0.20 = **0.40**. A plant that behaves the same either way scores near 0.
 - We only score plants active in at least {t["min_tight_hours"]} short hours, so the number is reliable ({n_scored:,} plants qualify on this basis).
-- **Important:** this flags *suspicious behavior*, not proven wrongdoing — a lead, not a verdict. The two "short" definitions are complementary; a plant flagged under **both** is the strongest lead.
+- **Important:** this flags *suspicious behavior*, not proven wrongdoing — a lead, not a verdict. The "short" definitions are complementary; a plant flagged under **more than one** is the strongest lead.
 """)
 
     wh = load_wh(basis, market)
@@ -633,11 +1018,7 @@ The idea: a plant gaming the market will price its power very high **especially 
         st.stop()
 
     # DAM-only: the real clearing-price impact test (offers above the actual price)
-    if (
-        market == "DAM"
-        and "impact_index" in wh.columns
-        and wh["impact_index"].notna().any()
-    ):
+    if market == "DAM" and "impact_index" in wh.columns and wh["impact_index"].notna().any():
         section(
             "Real clearing-price impact test",
             "Because day-ahead offers and day-ahead prices are the same market, we can go beyond the "
@@ -865,9 +1246,7 @@ The idea: a plant gaming the market will price its power very high **especially 
             }
         )
         st.dataframe(show, width="stretch", height=320, hide_index=True)
-        st.caption(
-            "Each row is one anonymous plant. Higher withholding score = more suspicious."
-        )
+        st.caption("Each row is one anonymous plant. Higher withholding score = more suspicious.")
         st.download_button(
             "⬇ Download these results (CSV)",
             wh.to_csv(index=False),
@@ -1066,11 +1445,7 @@ We score the timing overlap with a standard statistic — the **Matthews correla
         if has_xcheck:
             cols.insert(len(cols) - 1, "dam_corroborates")  # just before Confidence
             rename["dam_corroborates"] = "Day-ahead ✓"
-        show = (
-            r1.sort_values("confidence", ascending=False)
-            .head(25)[cols]
-            .rename(columns=rename)
-        )
+        show = r1.sort_values("confidence", ascending=False).head(25)[cols].rename(columns=rename)
         st.dataframe(show, width="stretch", height=360, hide_index=True)
 
     st.markdown("---")
@@ -1167,11 +1542,7 @@ We score the timing overlap with a standard statistic — the **Matthews correla
     def prep_series(df):
         """Return (x, y, hovertemplate, marker_size) at the chosen granularity."""
         if gran == "Daily":
-            agg = (
-                df.assign(day=df["h"].dt.floor("D"))
-                .groupby("day", as_index=False)["cap"]
-                .max()
-            )
+            agg = df.assign(day=df["h"].dt.floor("D")).groupby("day", as_index=False)["cap"].max()
             return (
                 agg["day"],
                 agg["cap"],
@@ -1249,12 +1620,8 @@ We score the timing overlap with a standard statistic — the **Matthews correla
                 col=1,
             )
 
-        outage_bars(
-            forced, "rgba(208,59,59,0.22)", "Matched plant — forced outage", "Forced"
-        )
-        outage_bars(
-            planned, "rgba(237,161,0,0.26)", "Matched plant — planned outage", "Planned"
-        )
+        outage_bars(forced, "rgba(208,59,59,0.22)", "Matched plant — forced outage", "Forced")
+        outage_bars(planned, "rgba(237,161,0,0.26)", "Matched plant — planned outage", "Planned")
 
         if len(yvals):
             fig.add_trace(
@@ -1278,9 +1645,7 @@ We score the timing overlap with a standard statistic — the **Matthews correla
                 row=row,
                 col=1,
             )
-        fig.update_yaxes(
-            range=[y0, y1], title_text="offered capacity (MW)", row=row, col=1
-        )
+        fig.update_yaxes(range=[y0, y1], title_text="offered capacity (MW)", row=row, col=1)
 
     add_market(1, bd, show_legend=True)
     add_market(2, bd_dam, show_legend=False)
@@ -1298,22 +1663,16 @@ We score the timing overlap with a standard statistic — the **Matthews correla
         else "🟥 Red bands mark days the matched real plant was on a forced (unexpected) outage. "
     )
     st.caption(
-        _bands
-        + "**Top = real-time (RTM), bottom = day-ahead (DAM)**, sharing one date axis. "
+        _bands + "**Top = real-time (RTM), bottom = day-ahead (DAM)**, sharing one date axis. "
         "The bidder's offered capacity drops on the plant's outage days in *both* markets — that "
-        "lined-up pattern, corroborated across two independent markets, is the fingerprint."
-        + _dots
+        "lined-up pattern, corroborated across two independent markets, is the fingerprint." + _dots
     )
     st.plotly_chart(fig, use_container_width=True)
 
     with st.expander("See every candidate match (and download the data)"):
         st.dataframe(m, width="stretch", height=320)
         _label = (
-            "magnitude-aware"
-            if is_mag
-            else "forced + planned"
-            if use_planned
-            else "forced-only"
+            "magnitude-aware" if is_mag else "forced + planned" if use_planned else "forced-only"
         )
         st.caption(
             f"Each anonymous bidder can have up to three candidate plants; 'rank 1' is its best match. "
