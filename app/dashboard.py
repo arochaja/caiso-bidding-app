@@ -50,6 +50,9 @@ PRODUCT_NAMES = {
     "RD": "Regulation down (RD)",
     "RMU": "Regulation mileage up (RMU)",
     "RMD": "Regulation mileage down (RMD)",
+    "GHG": "GHG allowance cost (GHG)",
+    "LFU": "Flexible ramp up (LFU)",
+    "LFD": "Flexible ramp down (LFD)",
 }
 
 
@@ -211,16 +214,17 @@ PAGE = st.sidebar.radio(
 st.sidebar.markdown("---")
 st.sidebar.markdown("**What am I looking at?**")
 st.sidebar.caption(
-    "Every power plant in California offers to sell electricity, hour by hour. "
-    "Those offers are public but stripped of names. This tool reads a full year "
+    "Power plants across California offer to sell electricity, hour by hour. "
+    "Those offers are public but stripped of names. This tool reads 364 days "
     "of them and checks for two things: plants that may be **gaming prices**, and "
     "how easily the **anonymity can be undone**."
 )
 st.sidebar.markdown("---")
-st.sidebar.metric("Price offers analyzed", f"{META['n_bid_rows'] / 1e6:.1f} million")
+st.sidebar.metric("Price steps analyzed", f"{META['n_bid_rows_analyzed'] / 1e6:.1f} million")
 st.sidebar.metric("Anonymous bidders", f"{META['n_resources']:,}")
 st.sidebar.caption(
-    f"Period: full-year {META['date_min'][:4]}  ({META['date_min']} → {META['date_max']})"
+    f"Period: {META.get('n_bid_days', 364)} days of {META['date_min'][:4]}  "
+    f"({META['date_min']} → {META['date_max']}; 2025-03-09 absent from the source files)"
 )
 
 # =====================================================================
@@ -250,15 +254,15 @@ if PAGE == "Overview":
     c = st.columns(5)
     kpi(
         c[0],
-        "Price offers analyzed",
-        f"{META['n_bid_rows'] / 1e6:.1f} M",
-        "hourly offers to sell power, full year",
+        "Price steps analyzed",
+        f"{META['n_bid_rows_analyzed'] / 1e6:.1f} M",
+        "individual (megawatt, price) steps inside hourly energy offers, 364 days",
     )
     kpi(
         c[1],
-        "Power plants",
+        "Anonymous bidders",
         f"{META['n_resources']:,}",
-        "anonymous bidders in the data",
+        "generators submitting priced energy offers",
     )
     flagged = int((wh["withholding_index"] > 0.05).sum())
     kpi(
@@ -273,14 +277,17 @@ if PAGE == "Overview":
         c[3],
         "Anonymity cracked",
         f"{hc:,}",
-        "bidders we could confidently name",
+        "bidders confidently named using forced outages alone "
+        f"({META.get('reident_highconf_links_combined', 0)} with planned outages too, "
+        f"{META.get('reident_highconf_links_magnitude', 0)} magnitude-aware)",
         tone="critical" if hc else None,
     )
     kpi(
         c[4],
         "Tightest moment",
         f"{md['peak_tight_mw'].max() / 1000:.1f} GW",
-        "most plant capacity offline at once (1 GW ≈ 750k homes)",
+        "most capacity offline at once from forced (unplanned) outages — scheduled "
+        "maintenance excluded (1 GW ≈ 750k homes)",
     )
 
     st.markdown("")
@@ -342,8 +349,12 @@ if PAGE == "Overview":
 
     section(
         "What kinds of offers were submitted, month by month",
-        "'Energy' is plain electricity and dominates. The rest are backup and grid-stability "
-        "services (called ancillary services) — reserves kept on standby in case a plant suddenly fails.",
+        "'Energy' is plain electricity and dominates. Most of the rest are backup and grid-stability "
+        "services (called ancillary services) — reserves kept on standby in case a plant suddenly "
+        "fails. 'GHG' is different: the greenhouse-gas allowance cost bid on power imported into "
+        "California. Bars count individual price steps, not whole offers, and products differ in how "
+        "many steps they use — so compare each product's shape over time rather than the bar heights "
+        "against each other.",
     )
     pm = load("product_monthly.parquet")
     pm["month"] = pd.to_datetime(pm["month"])
@@ -357,11 +368,11 @@ if PAGE == "Overview":
                 y=d["n_bids"],
                 name=product_label(prod),
                 marker_color=CAT[i % 8],
-                hovertemplate=f"{product_label(prod)}<br>%{{x|%b %Y}}: %{{y:,}} offers<extra></extra>",
+                hovertemplate=f"{product_label(prod)}<br>%{{x|%b %Y}}: %{{y:,}} price steps<extra></extra>",
             )
         )
     fig.update_layout(barmode="stack", bargap=0.25)
-    style(fig, height=340, ytitle="offers per month")
+    style(fig, height=340, ytitle="price steps per month")
     st.plotly_chart(fig, use_container_width=True)
 
 # =====================================================================
@@ -487,8 +498,8 @@ There are two prices for every hour. The **day-ahead (DAM)** price is set the af
         )
         section(
             "How often price was high",
-            "Every hour of the year, sorted priciest-first. The steep tail on the left is scarcity; "
-            "the dip below zero on the right is oversupply.",
+            "Every hour in the dataset, sorted priciest-first. The steep tail on the left is "
+            "scarcity; the dip below zero on the right is oversupply.",
         )
         s = phm[phm["hub"] == hubsel]["lmp"].sort_values(ascending=False).reset_index(drop=True)
         pctile = (s.index + 1) / len(s) * 100 if len(s) else s.index
@@ -570,9 +581,10 @@ There are two prices for every hour. The **day-ahead (DAM)** price is set the af
     )
     kpi(
         sc[1],
-        "Day-to-day swing",
+        "Hour-to-hour swing",
         f"±${p.get('spread_sd', 0):.0f}/MWh",
-        "standard deviation of the gap — how far real-time routinely departs from day-ahead",
+        "standard deviation of the hourly real-time-minus-day-ahead gap (the chart below "
+        "averages those hours into days, which smooths the swing considerably)",
     )
     kpi(
         sc[2],
@@ -694,10 +706,18 @@ There are two prices for every hour. The **day-ahead (DAM)** price is set the af
             )
         style(fig, height=340, ytitle="$/MWh")
         st.plotly_chart(fig, use_container_width=True)
+        _hourly_swing = (
+            oneday.assign(_h=oneday["ts"].dt.floor("h"))
+            .groupby("_h")["lmp"]
+            .agg(lambda x: x.max() - x.min())
+            .median()
+        )
         st.caption(
-            "On a typical hour the real-time price moves only about **$6**/MWh across its "
-            "five-minute intervals, but on days like this it can span more than **$1,000**/MWh — "
-            "swings the once-a-day day-ahead price cannot represent."
+            f"On this day the real-time price spans **\\${rng[daysel]:,.0f}**/MWh between its "
+            f"cheapest and priciest five-minute interval, and the typical single hour moves "
+            f"**\\${_hourly_swing:,.0f}**/MWh within itself — swings the once-a-day day-ahead price "
+            "cannot represent. (The day list above is ranked by that daily span; only the very "
+            "top days exceed \\$1,000.)"
         )
 
     with st.expander("The 25 priciest hours of the year (and download all prices)"):
@@ -716,11 +736,17 @@ There are two prices for every hour. The **day-ahead (DAM)** price is set the af
             }
         )
         st.dataframe(top, width="stretch", height=320, hide_index=True)
-        st.caption("Hourly hub prices — SP15, NP15, ZP26 and the system average — for all of 2025.")
+        st.caption(
+            f"Hourly hub prices — SP15, NP15, ZP26 and the system average — "
+            f"{ph['h'].min():%b %d %Y} to {ph['h'].max():%b %d %Y}, both markets, one row per "
+            "market/hub/hour. 2025-03-09 is absent from the day-ahead source file."
+        )
         st.download_button(
             "⬇ Download hourly prices (CSV)",
-            ph.to_csv(index=False),
-            "caiso_hub_lmp_2025.csv",
+            # `peak` is dropped: for the RTM system row it is a max ACROSS hubs of each hub's
+            # own 5-minute high, which is not a system price and no view here plots it.
+            ph.drop(columns=["peak"]).to_csv(index=False),
+            "caiso_hub_lmp.csv",
             "text/csv",
         )
 
@@ -744,8 +770,9 @@ elif PAGE == "Demand · Who wanted power":
         "Market",
         ["Day-ahead (DAM)", "Real-time (RTM)"],
         horizontal=True,
-        help="Demand is set in the day-ahead market. Real-time demand is barely re-bid, so the "
-        "RTM view is near-empty by design — shown for completeness.",
+        help="Demand is set in the day-ahead market. Only a handful of load resources re-bid in "
+        "real time, and the real-time file carries no self-schedule field at all — so the "
+        "must-take band there is structurally empty rather than measured.",
     )
     market = "DAM" if market_label.startswith("Day-ahead") else "RTM"
 
@@ -753,10 +780,12 @@ elif PAGE == "Demand · Who wanted power":
         st.markdown("""
 Every hour, buyers submit **demand bids** to CAISO — how many megawatts they want and the most they'll pay. Those bids come in two flavours:
 
-- **Must-take (self-scheduled)** — a fixed quantity the buyer wants *regardless of price*. Price-insensitive load.
-- **Price-responsive (economic)** — a demand *curve*: buy more when power is cheap, less when it's dear. This is the demand that can actually flex.
+- **Self-scheduled (must-take)** — a fixed quantity the buyer wants *regardless of price*. Price-insensitive load.
+- **Bid as a price curve (economic)** — megawatts submitted with a willingness-to-pay attached. In principle this is the demand that can flex; in practice about **95%** of these megawatts are bid flat at or above **\$1,000/MWh**, far above any price seen in 2025, so they behave as must-take too.
 
 We add both up across every buyer to get the system's **demand bid** each hour, then chart each day's **peak** (the tightest demand hour) across the year.
+
+Hours come from each bid's own interval fields. A self-scheduled row stamps its 24-hour window in `STARTTIME` and the actual hour in `TIMEINTERVALSTART`, so keying on the former would pile a whole day's must-take demand into hour 00.
 
 On the same timeline we overlay **supply tightness** — the most plant capacity forced offline at once that day (the same scarcity signal the screens use). Where a high demand day meets a thin-supply day is where prices are most likely to move.
 """)
@@ -773,9 +802,11 @@ On the same timeline we overlay **supply tightness** — the most plant capacity
         st.info(
             "**Demand is a day-ahead activity.** In real time, load is essentially carried over "
             "from the day-ahead schedule and barely re-bid — so real-time demand bids average only "
-            f"~{dd['demand_avg_mw'].mean() / 1000:.1f} GW versus ~"
-            f"{META.get('demand', {}).get('dam_avg_mw', 0) / 1000:.1f} GW day-ahead. This view is "
-            "shown for completeness; the day-ahead market is where demand really lives."
+            f"~{dd['demand_avg_mw'].mean() / 1000:.1f} GW across the hours that had any bid at "
+            f"all, versus ~{META.get('demand', {}).get('dam_avg_mw', 0) / 1000:.1f} GW day-ahead. "
+            "The real-time figure also contains no self-schedule component, because that field is "
+            "unpopulated in the real-time file. This view is shown for completeness; the day-ahead "
+            "market is where demand really lives."
         )
 
     peak_dem = dd["demand_peak_mw"].max()
@@ -798,19 +829,24 @@ On the same timeline we overlay **supply tightness** — the most plant capacity
         c[1],
         "Typical demand bid",
         f"{avg_dem / 1000:.1f} GW",
-        "average across all hours of the year",
+        (
+            f"average across the {META.get('n_bid_hours', 8736):,} day-ahead hours in the data"
+            if market == "DAM"
+            else "average across the real-time hours in which any load actually re-bid — "
+            "not every hour of the year"
+        ),
     )
     kpi(
         c[2],
         "Must-take share",
         f"{mt_share:.0f}%",
-        "demand that ignores price (self-scheduled)",
+        "share of demand MW submitted as a fixed self-schedule rather than as a price curve",
     )
     kpi(
         c[3],
         "Thinnest supply",
         f"{peak_tight:.1f} GW",
-        "most capacity offline at once (1 GW ≈ 750k homes)",
+        "most capacity forced offline at once — unplanned outages only (1 GW ≈ 750k homes)",
     )
 
     st.markdown("")
@@ -861,10 +897,11 @@ On the same timeline we overlay **supply tightness** — the most plant capacity
     with left:
         section(
             "What kind of demand was it?",
-            "Splitting each day's average demand into **price-responsive** (buyers who back off "
-            "when power gets expensive) and **must-take** (a fixed quantity bought at any price). "
-            "Price-responsive demand is the part of the market that can actually flex to relieve a "
-            "price spike.",
+            "Splitting each day's average demand into **self-scheduled** (a fixed quantity bought "
+            "at any price) and **bid as a price curve**. Note that roughly 95% of the price-curve "
+            "megawatts are bid flat at or above \\$1,000/MWh — above every price seen in 2025 — so "
+            "they are price-insensitive in practice. Genuinely sloped, flexible demand is a small "
+            "fraction of even the green band.",
         )
         fig2 = go.Figure()
         fig2.add_trace(
@@ -884,11 +921,11 @@ On the same timeline we overlay **supply tightness** — the most plant capacity
                 x=dd["day"],
                 y=dd["econ_avg_mw"] / 1000,
                 mode="lines",
-                name="Price-responsive (economic)",
+                name="Bid as a price curve (economic)",
                 line=dict(color=AQUA, width=0),
                 stackgroup="d",
                 fillcolor="rgba(27,175,122,0.55)",
-                hovertemplate="%{x|%b %d}<br>Price-responsive: %{y:.2f} GW<extra></extra>",
+                hovertemplate="%{x|%b %d}<br>Price curve: %{y:.2f} GW<extra></extra>",
             )
         )
         style(fig2, height=340, ytitle="GW (daily average)")
@@ -898,16 +935,25 @@ On the same timeline we overlay **supply tightness** — the most plant capacity
             "The takeaway",
             None,
         )
-        st.markdown(
-            f"""
-Across the year, **{mt_share:.0f}%** of day-ahead demand was **must-take** — bought no matter
-the price. The remaining **{100 - mt_share:.0f}%** was **price-responsive**, the sliver of demand
-that can ease off when supply is short.
+        if market == "DAM":
+            st.markdown(
+                f"""
+Across the year, **{mt_share:.0f}%** of day-ahead demand arrived as a fixed **self-schedule** — a
+quantity the buyer takes no matter the price. The other **{100 - mt_share:.0f}%** arrived as a
+**price curve**, and about 95% of *that* is bid flat at or above \\$1,000/MWh, so it never actually
+flexed in 2025 either.
 
-A grid where so little demand flexes leans hard on the **supply** side to keep prices in
-check — which is exactly why the withholding screens focus there.
+Because so little demand can genuinely ease off when supply is short, the market leans hard on the
+**supply** side to keep prices in check — which is exactly why the withholding screens focus there.
 """
-        )
+            )
+        else:
+            st.markdown(
+                """
+The real-time load file carries no self-schedule field, so the must-take / price-curve split
+cannot be computed for this market. Read the day-ahead view for the demand mix.
+"""
+            )
         st.download_button(
             "⬇ Download daily demand (CSV)",
             dd.to_csv(index=False),
@@ -958,7 +1004,8 @@ elif PAGE == "Screen 1 · Holding back power":
             _basis_labels,
             index=0,
             horizontal=True,
-            help="Outages: hours with the most plant capacity offline (needs no price data). "
+            help="Outages: hours with the most capacity on a forced/unplanned outage — planned "
+            "maintenance excluded (needs no price data). "
             "Day-ahead price spikes: top 10% of hours by the day-ahead market price. "
             "Real-time price spikes: top 10% of hours by the 5-minute real-time price — catches "
             "intra-hour scarcity the day-ahead price flattens. Scores differ because each defines "
@@ -992,22 +1039,60 @@ elif PAGE == "Screen 1 · Holding back power":
             )
         else:
             short_def = (
-                f"the {int((1 - t['tight_percentile']) * 100)}% of hours with the most plant capacity "
-                f"offline (at least **{t['tight_mw']:,.0f} MW** unavailable). This is a stand-in for scarcity "
-                "that needs no price data at all."
+                f"the {int((1 - t['tight_percentile']) * 100)}% of hours with the most capacity on a "
+                f"**forced (unplanned)** outage — at least **{t['tight_mw']:,.0f} MW** of unexpected "
+                "curtailment. Scheduled maintenance is excluded, because it is not unexpected "
+                "scarcity. This is a stand-in for scarcity that needs no price data at all."
             )
+        # How many plants in this market are flagged under MORE than one scarcity basis?
+        # Computed live, because the copy below makes a claim about it.
+        _flag = {}
+        for _b in _scored_bases:
+            _w = load_wh(_b, market)
+            if len(_w):
+                _flag[_b] = set(_w[_w["withholding_index"] > 0.05]["res"])
+        _multi_basis = len(
+            {r for a in _flag for b in _flag if a < b for r in (_flag[a] & _flag[b])}
+        )
+        # The outage basis is strongly seasonal: its short hours cluster in the second half of
+        # the year, so the "normal" baseline is partly a different season. Quantified live.
+        _season_caveat = ""
+        if basis == "outage" and have("market_hourly.parquet"):
+            _mh = load("market_hourly.parquet")
+            _tm = pd.to_datetime(_mh[_mh["is_tight"]]["h"]).dt.month
+            _late = 100 * _tm.isin([9, 10, 11, 12]).mean()
+            _early = int(_tm.isin([1, 2, 3, 4]).sum())
+            _season_caveat = (
+                "- **Caveat on this basis.** Forced outages cluster late in the year: "
+                f"{_late:.0f}% of the short hours fall in September–December and {_early} fall "
+                "in January–April. The 'normal' comparison is therefore partly a *different "
+                "season*, so a plant that simply offers higher in Q4 can score positive. "
+                "Cross-check any outage-basis lead against the two price bases.\n"
+            )
+        # median energy offer price for the market on screen, read from the dataset cards
+        _ds_key = "dam_bids" if market == "DAM" else "rtm_bids"
+        _med_offer = next(
+            (
+                v.replace("$", "").replace("/MWh", "")
+                for d in META.get("datasets", [])
+                if d.get("key") == _ds_key
+                for k, v in d.get("stats", [])
+                if k.startswith("Typical energy offer price")
+            ),
+            "35",
+        )
         st.markdown(f"""
 {mkt_note}
 
 The idea: a plant gaming the market will price its power very high **especially when the grid is short**, because that's when the tactic pays off. So we compare each plant against *itself* — its behavior in short hours vs. normal hours.
 
 - **"Grid is short" hours** = {short_def}
-- For each plant we measure the share of its offered power priced steeply high — **≥ \\${t["elevated_price"]:.0f} per megawatt-hour** — separately during short hours and normal hours. (For context, a typical price is around $32.)
-- **Withholding score = (high-priced share when short) − (high-priced share when normal).** A big positive number means the plant pushes prices up precisely when the grid can least afford it.
+- For each plant we measure the share of its offered power priced steeply high — **≥ \\${t["elevated_price"]:.0f} per megawatt-hour** — separately during short hours and normal hours. (For context, the median energy *offer* price in this market is about \\${_med_offer}/MWh.)
+- **Withholding score = (high-priced share when short) − (high-priced share when normal).** A big positive number means the plant moves more of its capacity to prices unlikely to clear precisely when the grid is short. Whether that could actually move the market price also depends on the plant's size and pivotality, which this screen does not test — some flagged plants are very small.
 - *Worked example:* a plant prices **20%** of its power steeply high in normal hours but **60%** when the grid is short → score = 0.60 − 0.20 = **0.40**. A plant that behaves the same either way scores near 0.
-- We only score plants active in at least {t["min_tight_hours"]} short hours, so the number is reliable ({n_scored:,} plants qualify on this basis).
-- **Important:** this flags *suspicious behavior*, not proven wrongdoing — a lead, not a verdict. The "short" definitions are complementary; a plant flagged under **more than one** is the strongest lead.
-""")
+- We only score plants active in at least {t["min_tight_hours"]} short hours, so a single unusual hour cannot drive the score ({n_scored:,} plants qualify on this basis). There is no statistical significance test — treat a high score on few hours with care.
+- **Important:** this flags *suspicious behavior*, not proven wrongdoing — a lead, not a verdict. The "short" definitions are complementary, and {_multi_basis} plants in this market are flagged under more than one — those are the strongest leads.
+{_season_caveat}""")
 
     wh = load_wh(basis, market)
     wd = load_wd(basis, market)
@@ -1030,7 +1115,7 @@ The idea: a plant gaming the market will price its power very high **especially 
         ic = st.columns(3)
         kpi(
             ic[0],
-            "Withheld above clearing (top plant)",
+            "Withheld above clearing — highest-impact plant",
             f"{imp.iloc[0]['withheld_mwh_tight']:,.0f} MWh",
             f"in short hours, plant #{int(imp.iloc[0]['res'])}",
             tone="critical",
@@ -1044,9 +1129,10 @@ The idea: a plant gaming the market will price its power very high **especially 
         )
         kpi(
             ic[2],
-            "Plants pricing above clearing when short",
+            "Plants shifting more capacity above clearing when short",
             f"{int((wh['impact_index'] > 0.05).sum()):,}",
-            "impact index above 0.05",
+            "impact index above 0.05 — i.e. the shift between short and normal hours, not "
+            "simply pricing above clearing at all",
         )
         top_i = imp.head(15).iloc[::-1]
         fig = go.Figure(
@@ -1167,11 +1253,13 @@ The idea: a plant gaming the market will price its power very high **especially 
     st.markdown("---")
     section(
         "Look inside one plant",
-        "Day by day, how much of this plant's offered power was priced high. Red dots mark days when the grid hit a short ('tight') hour.",
+        "Day by day, how much of this plant's offered power was priced high. Red dots mark days "
+        "when this plant was offering during a short ('tight') hour — so a short day the plant sat "
+        "out has no dot. Breaks in the line are days it submitted no energy offers at all.",
     )
     ids = wd["res"].unique().tolist()
     sel = st.selectbox(
-        "Pick a flagged plant",
+        "Pick one of the top-scoring plants",
         ids,
         key=f"wh_pick_{market}_{basis}",
         format_func=lambda r: (
@@ -1181,7 +1269,20 @@ The idea: a plant gaming the market will price its power very high **especially 
     d = wd[wd["res"] == sel].sort_values("day")
     row = wh[wh.res == sel].iloc[0]
     k = st.columns(4)
-    kpi(k[0], "Suspicion rank", f"#{int(row['rank'])}", "1 = most suspicious")
+    if row["withholding_index"] > 0:
+        kpi(
+            k[0],
+            "Suspicion rank",
+            f"#{int(row['rank'])}",
+            "lower = higher withholding score; many plants tie at 0 and their order is arbitrary",
+        )
+    else:
+        kpi(
+            k[0],
+            "Suspicion rank",
+            "not ranked",
+            "never priced above the high-price cutoff in a short hour",
+        )
     kpi(
         k[1],
         "Withholding score",
@@ -1191,13 +1292,25 @@ The idea: a plant gaming the market will price its power very high **especially 
     kpi(k[2], "High-priced share, short hours", f"{row['hi_share_tight'] * 100:.0f}%")
     kpi(k[3], "High-priced share, normal hours", f"{row['hi_share_normal'] * 100:.0f}%")
 
+    # Reindex onto every day in the plant's span so absent days render as GAPS. Plotly would
+    # otherwise draw a straight line across months the plant never bid in.
+    _dcal = (
+        d.set_index("day")
+        .reindex(pd.date_range(d["day"].min(), d["day"].max(), freq="D"))
+        .rename_axis("day")
+        .reset_index()
+        if len(d)
+        else d.assign(day=[])
+    )
     fig = go.Figure()
     fig.add_trace(
         go.Scatter(
-            x=d["day"],
-            y=d["hi_share"] * 100,
-            mode="lines",
+            x=_dcal["day"],
+            y=_dcal["hi_share"] * 100,
+            mode="lines+markers",
             line=dict(color=BLUE, width=1.5),
+            marker=dict(size=3, color=BLUE),
+            connectgaps=False,
             name="High-priced share",
             hovertemplate="%{x|%b %d}: %{y:.0f}% priced high<extra></extra>",
         )
@@ -1272,10 +1385,10 @@ elif PAGE == "Screen 2 · Unmasking bidders":
         st.markdown(f"""
 Anonymous bidders have ID numbers, not names. But two public facts can give them away:
 
-1. **Size clue.** Every bidder has a maximum amount of power it offers. Real named plants publish their maximum capacity (called **PMAX**). If a bidder's ceiling matches a named plant's capacity within **±{t["cap_tolerance_pct"]:.0f}%**, that plant becomes a candidate.
-2. **Timing clue.** When a plant is on an outage it stops bidding. We build each anonymous bidder's calendar of "went-quiet" days and compare it to each named plant's outage calendar. When the two calendars line up unusually well, that's a fingerprint.
+1. **Size clue.** Each bidder has a working ceiling — we use the **99th percentile** of its hourly offered capacity, so one freak hour doesn't set it. Real named plants publish their maximum capacity (called **PMAX**). If a bidder's ceiling is within **±{t["cap_tolerance_pct"]:.0f}%** of a named plant's capacity, that plant becomes a candidate. Bidders that have offered *more* than a plant's PMAX are ruled out for that plant, since no plant can exceed its own PMAX.
+2. **Timing clue.** When a plant is on an outage it stops bidding. We build each anonymous bidder's calendar of "went-quiet" days and compare it to each named plant's outage calendar. When the two calendars line up unusually well, that's a fingerprint. "Went quiet" means no priced offer curve *and* no fixed self-schedule — a resource running on a self-schedule is counted as present at those megawatts, not as quiet.
 
-We score the timing overlap with a standard statistic — the **Matthews correlation (φ)** — which runs from 0 (no better than chance) to 1 (perfect match). Plants that are always on, or always off, score near 0, so only genuinely *distinctive* patterns count.
+We score the timing overlap with a standard statistic — the **Matthews correlation (φ)** — which runs from **−1** (the two calendars line up *worse* than chance) through **0** (no better than chance) to **1** (a perfect match). Plants that are always on, or always off, score near 0, so only genuinely *distinctive* patterns count. The forced and forced+planned methods admit a match only at φ ≥ 0.30; the magnitude-aware method can admit one on curtailment-size tracking alone, so its φ — and the day-ahead cross-check φ, which is never gated — can come out negative. **A negative φ is evidence against the match.** Note that confidence treats a negative φ as 0 rather than penalising it.
 
 **Overall confidence = 60% timing match + 25% size match + 15% same type (battery vs. not).** A high-confidence match is a strong lead worth verifying — not courtroom proof.
 
@@ -1285,7 +1398,7 @@ We score the timing overlap with a standard statistic — the **Matthews correla
 
 **Magnitude-aware (partial curtailments).** Most outages aren't full shut-downs — the plant loses only *part* of its capacity, and a bidder on a partial outage offers *proportionally* less. The third method correlates the **size** of a plant's daily curtailment against **how much the bidder scaled back its offers** (a rank correlation, ρ), then blends it in: *confidence = 0.35·timing + 0.30·size-tracking + 0.25·capacity + 0.10·type*. This reaches plants that only ever partially derate — invisible to the on/off methods. Because timing is weighted less here, the three methods are best read as **complementary**, not strictly ranked.
 
-**Day-ahead cross-check.** Every match is scored a second time against the bidder's **day-ahead** offers (a different market): if the bidder *also* goes quiet in day-ahead on the same plant's outage days, the match has independent corroboration. The "Day-ahead ✓" column and the panel under each match flag this — a corroborated match is a materially stronger lead.
+**Day-ahead cross-check.** Each match is scored a second time wherever the bidder has a usable **day-ahead** pattern — roughly half do; many bidders submit no day-ahead offers at all. If the bidder *also* goes quiet in day-ahead on the same plant's outage days, the match is corroborated by a second, separate bid stream. Both tests compare against the same plant outage calendar, so this is corroboration rather than fully independent evidence. The "Day-ahead ✓" column and the panel under each match flag it — a corroborated match is a materially stronger lead.
 """)
 
     if not have("reident_matches_forced.parquet"):
@@ -1368,11 +1481,13 @@ We score the timing overlap with a standard statistic — the **Matthews correla
         tone="critical",
     )
     if has_xcheck:
+        n_testable = int(((r1["confidence"] >= 0.6) & r1["phi_dam"].notna()).sum())
         kpi(
             c[3],
             "Corroborated by day-ahead",
-            f"{n_corr:,} / {n_conf:,}",
-            "confident matches where the bidder ALSO goes quiet in day-ahead",
+            f"{n_corr:,} / {n_testable:,} testable",
+            f"of the {n_conf:,} confident matches, {n_testable:,} have a day-ahead pattern the "
+            "check can evaluate; the rest mostly submit no day-ahead offers at all",
             tone="good" if n_corr else None,
         )
     else:
@@ -1431,7 +1546,7 @@ We score the timing overlap with a standard statistic — the **Matthews correla
         ]
         rename = {
             "res": "Anon bidder",
-            "bidder_cap": "Offered cap (MW)",
+            "bidder_cap": "Offered cap, P99 (MW)",
             "cand_name": "Likely real plant",
             "cand_pmax": "Plant capacity (MW)",
             "cap_diff_pct": "Size gap %",
@@ -1451,7 +1566,9 @@ We score the timing overlap with a standard statistic — the **Matthews correla
     st.markdown("---")
     section(
         "See the fingerprint for one match",
-        "The giveaway: an anonymous bidder's offered power drops to nothing on exactly the days its matched real plant was broken down.",
+        "The giveaway: an anonymous bidder's offered capacity collapses — to below about a third of "
+        "its typical day — on a distinctive subset of the days its matched plant was derated. It need "
+        "not be every outage day, and the drop need not be to zero.",
     )
     r1s = r1.sort_values("confidence", ascending=False)
     sel = st.selectbox(
@@ -1472,7 +1589,7 @@ We score the timing overlap with a standard statistic — the **Matthews correla
         k[2],
         "Size match",
         f"{link['bidder_cap']:.1f} / {link['cand_pmax']:.1f} MW",
-        "bidder offers / plant capacity",
+        "bidder's P99 offered MW / plant PMAX",
     )
     has_rho = is_mag and "rho" in link.index and pd.notna(link.get("rho"))
     if has_rho:
@@ -1480,7 +1597,7 @@ We score the timing overlap with a standard statistic — the **Matthews correla
             k[3],
             "Timing φ · Size-track ρ",
             f"{link['phi']:.2f} · {link['rho']:.2f}",
-            "0–1 each; ρ uses partial curtailments",
+            "−1 to 1 each; ρ uses partial curtailments",
             tone="critical" if max(link["phi"], link["rho"]) > 0.6 else "serious",
         )
     else:
@@ -1488,7 +1605,7 @@ We score the timing overlap with a standard statistic — the **Matthews correla
             k[3],
             "Timing match (φ)",
             f"{link['phi']:.2f}",
-            "0 = chance, 1 = perfect",
+            "−1 to 1; 0 = chance, 1 = perfect, negative = worse than chance",
             tone="critical" if link["phi"] > 0.6 else "serious",
         )
     kpi(k[4], "Overall confidence", f"{link['confidence']:.0%}", tone="critical")
@@ -1536,7 +1653,8 @@ We score the timing overlap with a standard statistic — the **Matthews correla
         index=0,
         horizontal=True,
         key="reid_granularity",
-        help="Hourly shows every individual offer submission; Daily shows each day's peak offer.",
+        help="Hourly shows one point per hour — the top of that hour's offer curve, across all "
+        "price steps and resubmissions. Daily shows each day's highest hourly point.",
     )
 
     def prep_series(df):
@@ -1578,7 +1696,7 @@ We score the timing overlap with a standard statistic — the **Matthews correla
     dam_title = (
         "Day-ahead market (DAM)"
         if len(bd_dam)
-        else "Day-ahead market (DAM) — this bidder submitted no day-ahead offers"
+        else "Day-ahead market (DAM) — no day-ahead priced offers from this bidder"
     )
     fig = make_subplots(
         rows=2,
@@ -1653,19 +1771,38 @@ We score the timing overlap with a standard statistic — the **Matthews correla
     style(fig, height=620, ytitle=None)
 
     _dots = (
-        " Each blue dot is one hour the bidder submitted an offer; gaps are hours with no entry."
+        " Each blue dot is one hour the bidder submitted a priced offer curve; gaps are hours with "
+        "no priced offer (the bidder may still have been running on a self-schedule)."
         if gran == "Hourly"
-        else " Each blue dot is a day the bidder submitted offers (its peak that day); gaps are days with no entry."
+        else " Each blue dot is a day the bidder submitted priced offers (its peak that day); gaps "
+        "are days with no priced offer."
     ) + " Hover an outage band to see how many MW the plant was curtailed."
     _bands = (
         "🟥 Red = forced (unexpected) outages · 🟧 Amber = planned (scheduled) outages. "
         if use_planned
         else "🟥 Red bands mark days the matched real plant was on a forced (unexpected) outage. "
     )
+    if not len(bd_dam):
+        _xc = (
+            "This bidder submits no day-ahead priced offers, so only the real-time panel carries "
+            "signal. "
+        )
+    elif not bool(link.get("dam_corroborates")):
+        _xc = (
+            "The day-ahead panel does **not** reproduce the pattern, so this match rests on the "
+            "real-time series alone. "
+        )
+    else:
+        _xc = (
+            "The bidder's offered capacity drops on the plant's outage days in **both** markets. "
+            "That is a second, separate bid stream — though both tests use the same plant outage "
+            "calendar, so it is corroboration rather than independent evidence. "
+        )
     st.caption(
-        _bands + "**Top = real-time (RTM), bottom = day-ahead (DAM)**, sharing one date axis. "
-        "The bidder's offered capacity drops on the plant's outage days in *both* markets — that "
-        "lined-up pattern, corroborated across two independent markets, is the fingerprint." + _dots
+        _bands
+        + "**Top = real-time (RTM), bottom = day-ahead (DAM)**, sharing one date axis. "
+        + _xc
+        + _dots
     )
     st.plotly_chart(fig, use_container_width=True)
 
@@ -1699,8 +1836,9 @@ else:
     # ---------- the data behind the tool ----------
     section(
         "The data behind this tool",
-        "Everything here is built from four public CAISO datasets for the 2025 delivery year — no "
-        "private or outside data is used. Each plant is anonymized to an ID number in the bid data.",
+        f"Everything here is built from {len(META.get('datasets', []))} public CAISO datasets for "
+        "the 2025 delivery year — no private or outside data is used. Each plant is anonymized to an "
+        "ID number in the bid data.",
     )
     ds = META.get("datasets", [])
     for i in range(0, len(ds), 2):
@@ -1719,7 +1857,11 @@ else:
     st.caption(
         "A note on dates: the outages file contains records going back several years, but every "
         "screen analyzes only the **2025** delivery year (Jan 1 → Dec 31). One day, 2025-03-09 "
-        "(the spring daylight-saving switch), is missing from the price data."
+        "(the spring daylight-saving switch), is absent from both bid files and the day-ahead price "
+        f"file, so no hour of it is analyzed anywhere — coverage is {META.get('n_bid_days', 364)} "
+        f"days / {META.get('n_bid_hours', 8736):,} hours. (The 5-minute real-time price file does "
+        "cover that day.) On 2025-11-02 the clocks go back and the two physical 01:00 hours share "
+        "one row; prices keep the higher of the two, matching how the bid files stamp that hour."
     )
     st.markdown("---")
 
@@ -1730,10 +1872,11 @@ else:
         st.markdown(f"""
 | Setting | Value | In plain terms |
 |---|---|---|
-| "High price" cutoff | **\\${t["elevated_price"]:.0f}/MWh** | Offers at or above this count as steeply priced (a typical price is ~\\$32). |
+| "High price" cutoff | **\\${t["elevated_price"]:.0f}/MWh** | Offers at or above this count as steeply priced (the median energy offer is roughly \\$35/MWh in real-time, \\$40 day-ahead). |
 | "Near-maximum" cutoff | **\\${t["nearcap_price"]:.0f}/MWh** | Close to the market's ~\\$1,000 price ceiling. |
-| "Grid is short" — outages | **top {int((1 - t["tight_percentile"]) * 100)}%** of hours | Hours with ≥ {t["tight_mw"]:,.0f} MW of capacity offline. |
-| "Grid is short" — prices | **top {int((1 - t.get("price_tight_percentile", 0.9)) * 100)}%** of hours | Hours with system day-ahead price ≥ \\${t.get("price_tight_lmp", 0):.0f}/MWh. |
+| "Grid is short" — outages | **top {int((1 - t["tight_percentile"]) * 100)}%** of hours | Hours with ≥ {t["tight_mw"]:,.0f} MW on a forced (unplanned) outage; planned maintenance excluded. |
+| "Grid is short" — day-ahead prices | **top {int((1 - t.get("price_tight_percentile", 0.9)) * 100)}%** of hours | Hours with system day-ahead price ≥ \\${t.get("price_tight_lmp", 0):.0f}/MWh. |
+| "Grid is short" — real-time prices | **top {int((1 - t.get("price_tight_percentile", 0.9)) * 100)}%** of hours | Hours whose *average* 5-minute real-time system price was ≥ \\${t.get("price_tight_lmp_rtm", 0):.0f}/MWh. |
 | Min. short hours to score | **{t["min_tight_hours"]}** | A plant needs enough short-hour activity to be judged fairly. |
 | Size-match tolerance | **±{t["cap_tolerance_pct"]:.0f}%** | How close a bidder's ceiling must be to a plant's capacity to be a candidate. |
 """)
@@ -1743,14 +1886,16 @@ else:
 | | |
 |---|---|
 | Source | {META["generated_scope"]} |
-| Price offers | {META["n_bid_rows"]:,} |
-| Anonymous bidders | {META["n_resources"]:,} |
+| Price steps in the source file | {META["n_bid_rows"]:,} |
+| Price steps used by the screens | {META.get("n_bid_rows_analyzed", 0):,} |
+| Bidders analyzed (generators with positive-MW energy offers) | {META["n_resources"]:,} |
 | Dates | {META["date_min"]} → {META["date_max"]} |
 | Bid markets | {" + ".join(META.get("markets", ["RTM"]))} (real-time + day-ahead) |
 | Day-ahead prices | 3 trading hubs, median \\${META.get("price", {}).get("median_sys_lmp", 0):.0f}/MWh, {META.get("price", {}).get("neg_price_hours", 0):,} negative-price hours |
-| Plants scored — RTM (outage / price) | {META.get("withholding_scored_by", {}).get("RTM_outage", 0):,} / {META.get("withholding_scored_by", {}).get("RTM_price", 0):,} |
-| Plants scored — DAM (outage / price) | {META.get("withholding_scored_by", {}).get("DAM_outage", 0):,} / {META.get("withholding_scored_by", {}).get("DAM_price", 0):,} |
-| Confident unmaskings (day-ahead corroborated) | {META["reident_highconf_links_combined"]:,} ({META.get("reident_dam_corroborated_combined", 0):,}) |
+| Plants scored — RTM (outage / day-ahead price / real-time price) | {META.get("withholding_scored_by", {}).get("RTM_outage", 0):,} / {META.get("withholding_scored_by", {}).get("RTM_price", 0):,} / {META.get("withholding_scored_by", {}).get("RTM_price_rtm", 0):,} |
+| Plants scored — DAM (outage / day-ahead price / real-time price) | {META.get("withholding_scored_by", {}).get("DAM_outage", 0):,} / {META.get("withholding_scored_by", {}).get("DAM_price", 0):,} / {META.get("withholding_scored_by", {}).get("DAM_price_rtm", 0):,} |
+| Confident unmaskings — forced / +planned / magnitude-aware | {META["reident_highconf_links"]:,} / {META["reident_highconf_links_combined"]:,} / {META["reident_highconf_links_magnitude"]:,} |
+| …of those, corroborated by the day-ahead cross-check | {META.get("reident_dam_corroborated", 0):,} / {META.get("reident_dam_corroborated_combined", 0):,} / {META.get("reident_dam_corroborated_magnitude", 0):,} |
 """)
 
     section(
@@ -1770,18 +1915,19 @@ else:
 
 **3 · Timing match, φ (Screen 2).** We line up two calendars — the days a bidder *went quiet* and the days a named plant was *on outage* — and score how well they coincide with a standard statistic, the Matthews correlation (**φ**).
 
-> φ runs from **0** (the two calendars line up no better than random) to **1** (they match perfectly). A plant that is almost always on, or almost always off, scores near 0 — so only genuinely *distinctive* patterns produce a high φ.
+> φ runs from **−1** (the two calendars line up *worse* than random) through **0** (no better than random) to **1** (a perfect match). A plant that is almost always on, or almost always off, scores near 0 — so only genuinely *distinctive* patterns produce a high φ. A negative φ is evidence *against* a match; note that the confidence blend treats a negative φ as 0 rather than penalising it.
 
 **4 · Match confidence (Screen 2).** We blend three public clues into one 0–100% score:
 
 > **confidence = 60% × timing match (φ) + 25% × how closely the sizes match + 15% × same type (battery or not).** We call a match **confident** at **≥ 60%**. (The magnitude-aware method re-weights these and adds a fourth clue — see that screen.)
 
-**5 · Day-ahead cross-check (Screen 2).** We run the timing-match test a *second* time using the bidder's **day-ahead** offers. If the bidder also goes quiet in day-ahead on the same plant's outage days, the match has independent corroboration from a different market — a materially stronger lead.
+**5 · Day-ahead cross-check (Screen 2).** We run the timing-match test a *second* time using the bidder's **day-ahead** offers, wherever the bidder has a usable day-ahead pattern — roughly half do, since many submit no day-ahead offers at all. If the bidder also goes quiet in day-ahead on the same plant's outage days, the match is corroborated by a second, separate bid stream. Both tests use the same plant outage calendar, so this is corroboration rather than fully independent evidence — but it is still a materially stronger lead.
 
-**6 · "When the grid is short."** Two independent definitions, toggled in Screen 1:
+**6 · "When the grid is short."** Three independent definitions, toggled in Screen 1:
 
-> **Outages** — the {int((1 - t["tight_percentile"]) * 100)}% of hours with the most plant capacity offline (≥ {t["tight_mw"]:,.0f} MW). Needs no price data.
-> **Prices** — the {int((1 - t.get("price_tight_percentile", 0.9)) * 100)}% of hours with the highest day-ahead price (≥ \\${t.get("price_tight_lmp", 0):.0f}/MWh). The market's own scarcity signal.
+> **Outages** — the {int((1 - t["tight_percentile"]) * 100)}% of hours with the most capacity on a **forced (unplanned)** outage (≥ {t["tight_mw"]:,.0f} MW); scheduled maintenance is excluded. Needs no price data.
+> **Day-ahead prices** — the {int((1 - t.get("price_tight_percentile", 0.9)) * 100)}% of hours with the highest day-ahead system price (≥ \\${t.get("price_tight_lmp", 0):.0f}/MWh). The market's own scarcity signal.
+> **Real-time prices** — the {int((1 - t.get("price_tight_percentile", 0.9)) * 100)}% of hours whose *average* 5-minute real-time system price was highest (≥ \\${t.get("price_tight_lmp_rtm", 0):.0f}/MWh). Because it is an hourly average, one 5-minute spike inside an otherwise cheap hour does not by itself mark the hour short.
 """)
 
     section("Key assumptions & caveats")
@@ -1808,7 +1954,7 @@ else:
 - **Economic withholding** — pricing power so high it won't be used, to shrink supply and lift prices.
 - **Re-identification** — figuring out which real, named plant an anonymous bidder actually is.
 - **PMAX** — a plant's maximum output capacity.
-- **φ (phi), the Matthews correlation** — a 0-to-1 score for how well two on/off calendars line up (0 = chance, 1 = perfect).
+- **φ (phi), the Matthews correlation** — a −1-to-1 score for how well two on/off calendars line up (0 = chance, 1 = perfect, negative = worse than chance).
 - **Ancillary services** — backup and stability services (like standby reserves) the grid buys on top of plain energy.
 """)
     st.caption(

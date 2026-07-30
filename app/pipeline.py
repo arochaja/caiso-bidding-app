@@ -111,7 +111,9 @@ con.execute(f"""
 create or replace table rh as
 select
   RESOURCEBID_SEQ                          as res,
-  any_value(SCHEDULINGCOORDINATOR_SEQ)     as sc,
+  min(SCHEDULINGCOORDINATOR_SEQ)           as sc,  -- deterministic: a resource can be
+                                                  -- bid by several SCs; any_value() picked
+                                                  -- an arbitrary one that changed per run
   cast(STARTTIME as timestamp)             as h,
   cast(substr(STARTTIME,1,10) as date)     as day,
   max(SCH_BID_XAXISDATA)                   as cap,
@@ -123,10 +125,38 @@ select
   bool_or(MAXEOHSTATEOFCHARGE is not null) as is_storage
 from read_parquet('{BIDS}')
 where MARKETPRODUCTTYPE='EN' and SCH_BID_XAXISDATA is not null and SCH_BID_XAXISDATA > 0
+  -- GENERATOR only, matching rh_dam below: a withholding screen is about SUPPLY.
+  -- Real-time EN bids also carry INTERTIE (import/export schedules) and LOAD (demand);
+  -- neither is a generator that can withhold its own capacity, and keeping them here
+  -- while rh_dam excludes them made the RTM and DAM headline counts incomparable.
+  and RESOURCE_TYPE = 'GENERATOR'
 group by RESOURCEBID_SEQ, cast(STARTTIME as timestamp), cast(substr(STARTTIME,1,10) as date)
 """)
 n_rh = con.execute("select count(*) from rh").fetchone()[0]
 log(f"  resource-hours: {n_rh:,}")
+
+# Self-scheduled MW per resource-day, for BOTH markets. `rh` above deliberately keeps only
+# PRICED offer curves (SCH_BID_XAXISDATA), because every Screen 1 share is a share of priced
+# capacity. But a resource that submits ONLY a fixed self-schedule has no priced curve at all,
+# so it vanishes from `rh` — and Stage 4 then reads that absence as the bidder "going quiet"
+# when it was in fact running at full output. These tables let Stage 4 tell the two apart.
+# Kept separate on purpose: folding self-schedule MW into `cap` would corrupt elev_mw/near_mw,
+# which subtract priced-step maxima.
+for _tbl, _src in (("ss_day", BIDS), ("ss_day_dam", DAMB)):
+    con.execute(f"""
+    create or replace table {_tbl} as
+    select RESOURCEBID_SEQ as res,
+           cast(substr(STARTTIME,1,10) as date) as day,
+           max(SELFSCHEDMW) as ss_mw
+    from read_parquet('{_src}')
+    where MARKETPRODUCTTYPE='EN' and RESOURCE_TYPE='GENERATOR'
+      and SELFSCHEDMW is not null and SELFSCHEDMW > 0
+    group by 1, 2
+    """)
+log(
+    f"  self-scheduled resource-days: RTM {con.execute('select count(*) from ss_day').fetchone()[0]:,}"
+    f"; DAM {con.execute('select count(*) from ss_day_dam').fetchone()[0]:,}"
+)
 
 # =====================================================================
 # Stage 1: system tightness — forced-outage MW active per hour
@@ -256,14 +286,23 @@ log(
 #   grid actually settled at, (b) the DAM->RTM spread (day-ahead vs real-time
 #   divergence — a classic surveillance signal), and (c) an RTM-based scarcity
 #   definition that catches the intra-hour price spikes hourly DAM flattens.
-#   Native 5-min is kept for the volatility view; hourly means align to bid
-#   hours exactly as the DAM series does, and we also carry each hour's peak
-#   5-minute value so the spike survives the hourly rollup.
+#   Native 5-min is kept for the volatility view. NOTE the timestamp asymmetry
+#   between the two price files: the DAM file stores INTERVALSTARTTIME_GMT as a
+#   VARCHAR carrying an explicit offset ("...T16:00:00-00:00"), so casting it to
+#   TIMESTAMPTZ resolves correctly; the RTM file stores a NAIVE TIMESTAMP already
+#   in GMT, so the same cast would interpret it in the session timezone and leave
+#   the GMT wall-clock untouched — putting the whole real-time series 7-8 hours
+#   late (it once ran to 2026-01-01 07:55 and correlated 0.06 with day-ahead
+#   instead of 0.85). It must be read AT TIME ZONE 'UTC' first. Hourly means then
+#   align to bid hours exactly as the DAM series does, and we also carry each
+#   hour's peak 5-minute value so the spike survives the hourly rollup.
 log("Stage 1b-RTM: real-time hub prices (5-min) + RTM scarcity signal...")
 con.execute(f"""
 create or replace table rtm_5min as
 select
-  (INTERVALSTARTTIME_GMT::TIMESTAMPTZ AT TIME ZONE 'America/Los_Angeles') as ts,
+  -- naive GMT timestamp -> Pacific. Do NOT use ::TIMESTAMPTZ here (see note above),
+  -- and do not rely on a session TimeZone setting for correctness.
+  (INTERVALSTARTTIME_GMT AT TIME ZONE 'UTC' AT TIME ZONE 'America/Los_Angeles') as ts,
   case NODE_ID
     when '{HUBS["SP15"]}' then 'SP15'
     when '{HUBS["NP15"]}' then 'NP15'
@@ -290,15 +329,27 @@ select date_trunc('hour', ts) as h, hub,
 from rtm_5min group by 1, 2
 """)
 # system real-time price = mean LMP across the three hubs (RTM scarcity ref).
+# Build the SYSTEM 5-minute series first, then roll it up: taking max(peak5) over the
+# hourly per-hub rows would give "the highest 5-min print at ANY single hub", which is not
+# a system price at all and overstated the system 5-minute peak in 99.5% of hours.
+con.execute("""
+create or replace table rtm_sys5 as
+select ts,
+       avg(lmp)        as lmp,
+       avg(energy)     as energy,
+       avg(congestion) as congestion,
+       avg(loss)       as loss
+from rtm_5min group by ts
+""")
 con.execute("""
 create or replace table rtm_sysprice as
-select h,
+select date_trunc('hour', ts) as h,
        avg(lmp)        as sys_price,
-       max(peak5)      as sys_peak5,
+       max(lmp)        as sys_peak5,
        avg(energy)     as sys_energy,
        avg(congestion) as sys_congestion,
        avg(loss)       as sys_loss
-from rtm_hourly group by h
+from rtm_sys5 group by 1
 """)
 price_thr_rtm = con.execute(
     f"select quantile_cont(sys_price,{PRICE_TIGHT_PCTL}) from rtm_sysprice"
@@ -391,6 +442,25 @@ log(
     f"  DAM->RTM spread: mean ${spread_stats[0]}/MWh, sd ${spread_stats[1]}, range [${spread_stats[3]}, ${spread_stats[2]}]"
 )
 
+# --- build assertions: fail loudly rather than ship a misaligned price series ----------
+# These exist because the RTM series once shipped 8 hours late (naive-GMT timestamp read in
+# the session timezone). Every symptom below was visible in the output at the time.
+_rtm_lo, _rtm_hi = con.execute("select min(ts), max(ts) from rtm_5min").fetchone()
+if not (_rtm_lo.year == 2025 and _rtm_hi.year == 2025):
+    raise SystemExit(
+        f"RTM price series is not inside 2025 ({_rtm_lo} -> {_rtm_hi}) — check the "
+        "INTERVALSTARTTIME_GMT timezone conversion in Stage 1b-RTM."
+    )
+_corr, _shared = con.execute("""
+  select corr(r.sys_price, p.sys_price), count(*) from rtm_sysprice r join sysprice p using (h)
+""").fetchone()
+if _shared < 8000 or _corr is None or _corr < 0.5:
+    raise SystemExit(
+        f"day-ahead and real-time hourly prices correlate at {_corr} over {_shared} shared "
+        "hours; below 0.5 means the two series are not on the same clock."
+    )
+log(f"  check: DAM/RTM hourly price correlation {_corr:.2f} over {_shared:,} shared hours")
+
 # =====================================================================
 # Stage 1c: DAY-AHEAD bids at resource-hour grain — same market as the LMP.
 #   Adds `above_clearing_mw`: capacity the resource offered at a price ABOVE the
@@ -403,7 +473,7 @@ con.execute(f"""
 create or replace table rh_dam as
 select
   b.RESOURCEBID_SEQ                          as res,
-  any_value(b.SCHEDULINGCOORDINATOR_SEQ)     as sc,
+  min(b.SCHEDULINGCOORDINATOR_SEQ)           as sc,  -- deterministic (see rh)
   cast(b.STARTTIME as timestamp)             as h,
   cast(substr(b.STARTTIME,1,10) as date)     as day,
   max(b.SCH_BID_XAXISDATA)                   as cap,
@@ -486,8 +556,16 @@ copy (
 #   bid by a resource-hour = self-scheduled MW + the top of its economic curve. We
 #   sum across resources to an hourly system-demand series, then take each day's peak
 #   and average. Kept for BOTH markets so the panel's DAM/RTM toggle mirrors Screen 1;
-#   note that real-time demand is barely re-bid (~0.8 GW vs ~8.5 GW day-ahead), because
-#   load is essentially set in the day-ahead market.
+#   note that real-time demand is barely re-bid (see meta.json["demand"] for the current
+#   figures — do not hardcode them here), because load is essentially set day-ahead.
+#
+#   HOUR KEY: use the interval columns, NOT STARTTIME. For a self-scheduled LOAD row
+#   STARTTIME is the 24-hour ENVELOPE (00:00 -> next-day 00:00) and the actual hour lives
+#   in TIMEINTERVALSTART; economic curve rows carry theirs in SCH_BID_TIMEINTERVALSTART.
+#   Keying on STARTTIME piled every self-scheduled MW into hour 00 and then divided it
+#   across 24 hours, which understated average day-ahead demand 3x (9.7 GW vs 29.2 GW)
+#   and inverted the must-take share (12% vs 71%). Verified: no LOAD row has both
+#   interval columns null, in either market.
 # =====================================================================
 log("Stage 2b: demand-side (LOAD) bids...")
 demand_selects = []
@@ -506,14 +584,15 @@ for market, path in MARKETS.items():
              sum(econ_mw) as econ_mw,
              sum(self_mw) as self_mw
       from (
-        select cast(substr(STARTTIME,1,10) as date) as day,
-               cast(STARTTIME as timestamp)         as h,
+        select cast(coalesce(TIMEINTERVALSTART, SCH_BID_TIMEINTERVALSTART) as date)      as day,
+               cast(coalesce(TIMEINTERVALSTART, SCH_BID_TIMEINTERVALSTART) as timestamp) as h,
                coalesce(max(SCH_BID_XAXISDATA),0)
                  + max(coalesce(SELFSCHEDMW,0))     as dem_mw,
                coalesce(max(SCH_BID_XAXISDATA),0)   as econ_mw,
                max(coalesce(SELFSCHEDMW,0))         as self_mw
         from read_parquet('{path}')
         where MARKETPRODUCTTYPE='EN' and RESOURCE_TYPE='LOAD'
+          and coalesce(TIMEINTERVALSTART, SCH_BID_TIMEINTERVALSTART) is not null
         group by 1, 2, RESOURCEBID_SEQ
       ) dh
       group by day, h
@@ -607,7 +686,9 @@ def build_wh(market, rh_table, basis, flagcol):
     con.execute(f"""
     create or replace table top_wh_{tag} as
     select res from wh_{tag}
-    order by withholding_index desc, nearcap_mwh_tight desc limit {TOP_DRILL}
+    -- `res` breaks ties so this picker and the rank column below cannot disagree:
+    -- 70-75% of scored resources have withholding_index AND nearcap_mwh_tight of exactly 0.
+    order by withholding_index desc, nearcap_mwh_tight desc, res limit {TOP_DRILL}
     """)
     return con.execute(f"select count(*) from wh_{tag}").fetchone()[0]
 
@@ -641,12 +722,13 @@ copy (
          above_share_tight, above_share_normal, impact_index, withheld_mwh_tight,
          market, basis,
          row_number() over (
-           partition by market, basis order by withholding_index desc, nearcap_mwh_tight desc
+           partition by market, basis
+           order by withholding_index desc, nearcap_mwh_tight desc, res  -- `res`: see top_wh
          ) as rank
   from (
     {_wh_union}
   )
-  order by market, basis, withholding_index desc
+  order by market, basis, withholding_index desc, nearcap_mwh_tight desc, res
 ) to '{OUT}/withholding_resource.parquet' (format parquet)
 """)
 
@@ -684,7 +766,7 @@ log("Stage 4: re-identification / fingerprinting...")
 # 4a. bidder profiles (capacity fingerprint + storage tag)
 bidder = con.execute("""
 select res,
-       any_value(sc) as sc,
+       min(sc) as sc,  -- deterministic (see rh)
        bool_or(is_storage) as is_storage,
        quantile_cont(cap,0.99) as cap_ref,
        max(cap) as cap_max,
@@ -749,7 +831,10 @@ def build_res_days(where_clause):
     rd = defaultdict(set)
     for rid, s, e in rows.itertuples(index=False):
         d0 = pd.Timestamp(s).normalize()
-        d1 = pd.Timestamp(e).normalize()
+        # The tightness join is half-open [start, end), so an outage ending exactly at
+        # midnight does not cover that final day at all. Step back a second before
+        # normalising, or a zero-minute day enters the calendar and inflates phi/recall.
+        d1 = max(d0, (pd.Timestamp(e) - pd.Timedelta(seconds=1)).normalize())
         for d in pd.date_range(d0, d1, freq="D"):
             rd[rid].add(d.date())
     return rd
@@ -766,6 +851,30 @@ res_days_combined = build_res_days("")  # forced OR planned
 present_cap = defaultdict(dict)  # res -> {date: cap}
 for res, day, cap in bday.itertuples(index=False):
     present_cap[res][pd.Timestamp(day).date()] = cap
+
+
+def merge_selfsched(pc, tbl):
+    """Count a self-scheduled day as PRESENT at its self-scheduled MW.
+
+    A fixed self-schedule is the opposite of going quiet — it is a commitment to run
+    regardless of price. Without this, a resource that switched from priced offers to a
+    self-schedule looked absent, and Stage 4 scored that absence as a went-quiet day that
+    could coincide with a plant outage. Takes the max of the two so a day with BOTH a priced
+    curve and a self-schedule keeps whichever is larger.
+    """
+    added = 0
+    for res, day, ss_mw in (
+        con.execute(f"select res, day, ss_mw from {tbl}").fetchdf().itertuples(index=False)
+    ):
+        dd = pd.Timestamp(day).date()
+        if float(ss_mw) > pc[res].get(dd, 0.0):
+            added += dd not in pc[res]
+            pc[res][dd] = float(ss_mw)
+    return added
+
+
+_ss_added = merge_selfsched(present_cap, "ss_day")
+log(f"  real-time days reclassified absent -> self-scheduled: {_ss_added:,}")
 bref = {res: float(np.median(list(caps.values()))) for res, caps in present_cap.items()}
 
 bidder_dip_days = defaultdict(set)
@@ -803,6 +912,8 @@ bidder_dam = con.execute(
 present_cap_dam = defaultdict(dict)
 for res, day, cap in bday_dam.itertuples(index=False):
     present_cap_dam[res][pd.Timestamp(day).date()] = cap
+_ss_added_dam = merge_selfsched(present_cap_dam, "ss_day_dam")
+log(f"  day-ahead days reclassified absent -> self-scheduled: {_ss_added_dam:,}")
 bref_dam = {res: float(np.median(list(c.values()))) for res, c in present_cap_dam.items()}
 dam_span = {
     r.res: (
@@ -837,7 +948,9 @@ res_curt_mw = defaultdict(dict)  # rid -> {day: max concurrent curtailment MW}  
 for rid, s, e, cmw, pmax in oc.itertuples(index=False):
     mw = float(cmw) if cmw is not None else 0.0
     f = min(1.0, mw / pmax) if pmax else 0.0
-    for d in pd.date_range(pd.Timestamp(s).normalize(), pd.Timestamp(e).normalize(), freq="D"):
+    _d0 = pd.Timestamp(s).normalize()
+    _d1 = max(_d0, (pd.Timestamp(e) - pd.Timedelta(seconds=1)).normalize())  # see build_res_days
+    for d in pd.date_range(_d0, _d1, freq="D"):
         dd = d.date()
         if mw > res_curt_mw[rid].get(dd, -1.0):
             res_curt_mw[rid][dd] = mw
@@ -883,18 +996,28 @@ def phi_coeff(dips, odays_span, N):
     return (num / (den**0.5)) if den > 0 else 0.0, n11
 
 
-def dam_crosscheck(res, cand_rid):
-    """Independently corroborate a match using the DAY-AHEAD offers: φ of the
-    resource's DAM dip-days against the candidate plant's (forced+planned) outage
-    days, over the resource's DAM span. Returns (phi_dam, overlap_days, corroborates).
-    NaN/False when the resource has no usable DAM dip pattern."""
-    if res not in dam_span or cand_rid not in res_days_combined:
+def dam_crosscheck(res, cand_rid, res_days):
+    """Corroborate a match using the DAY-AHEAD offers: φ of the resource's DAM dip-days
+    against the candidate plant's outage days, over the resource's DAM span. Returns
+    (phi_dam, overlap_days, corroborates); NaN/False when the resource has no usable DAM
+    dip pattern.
+
+    `res_days` MUST be the same outage calendar the calling mode scored its RTM φ against
+    — it used to be hard-coded to the forced+planned set, so forced-only matches were
+    cross-checked against a calendar that included planned maintenance they never used.
+    That mislabelled real corroborations as failures (e.g. HELMS PUMP-GEN UNIT 1: φ_dam
+    0.224 against forced+planned vs 0.554 on its own forced-only calendar).
+
+    Note this is a second, SEPARATE bid stream rather than fully independent evidence:
+    both tests compare against the same plant outage calendar.
+    """
+    if res not in dam_span or cand_rid not in res_days:
         return float("nan"), 0, False
     d0, d1, N = dam_span[res]
     dips = bidder_dip_days_dam.get(res, set())
     if len(dips) < 3 or N < 30:
         return float("nan"), 0, False
-    odays_span = {d for d in res_days_combined[cand_rid] if d0 <= d <= d1}
+    odays_span = {d for d in res_days[cand_rid] if d0 <= d <= d1}
     if not odays_span or len(odays_span) > 0.9 * N:
         return float("nan"), 0, False
     phi, inter = phi_coeff(dips, odays_span, N)
@@ -941,9 +1064,13 @@ def run_reident(res_days, magnitude=False):
             if len(dips) < 3 or N < 30 or len(dips) > 0.7 * N:
                 continue
         n_fp += 1
-        lo, hi = cap * (1 - CAP_TOL), cap * (1 + CAP_TOL)
-        i0 = int(np.searchsorted(res_pmax, lo))
-        i1 = int(np.searchsorted(res_pmax, hi))
+        # Candidate PMAX window. Inverted on purpose: the published size gap (cap_diff_pct,
+        # and cap_close below) divides by PMAX, so a window of cap*(1 +/- TOL) let matches
+        # through at |cap-pmax|/pmax = TOL/(1-TOL) = 13.6% under a stated +/-12% rule.
+        # pmax in [cap/(1+TOL), cap/(1-TOL)]  <=>  |cap-pmax|/pmax <= TOL, exactly.
+        lo, hi = cap / (1 + CAP_TOL), cap / (1 - CAP_TOL)
+        i0 = int(np.searchsorted(res_pmax, lo, side="left"))
+        i1 = int(np.searchsorted(res_pmax, hi, side="right"))
         d0, d1 = span_first[b.res], span_last[b.res]
         sdays = span_days.get(b.res)
         yred = bidder_reduction.get(b.res)
@@ -951,6 +1078,14 @@ def run_reident(res_days, magnitude=False):
         for j in range(i0, i1):
             rid = res_ids[j]
             pmax = res_pmax[j]
+            # Exact tolerance test on the published denominator (the searchsorted window
+            # above is only a fast pre-filter), plus a physical sanity check: a bidder that
+            # has offered MORE than the plant's PMAX cannot be that plant. cap_ref is a P99,
+            # so a bidder with a low P99 but a high peak used to slip through on size alone.
+            if not pmax or abs(cap - pmax) / pmax > CAP_TOL:
+                continue
+            if b.cap_max and b.cap_max > pmax * (1 + CAP_TOL):
+                continue
             odays = res_days.get(rid)
             if not odays:
                 continue
@@ -1020,15 +1155,17 @@ def run_reident(res_days, magnitude=False):
             if magnitude:
                 rec["rho"] = None if np.isnan(rho) else round(float(rho), 3)
             # day-ahead cross-check: does the bidder also go quiet in DAM on this
-            # candidate's outage days? (second, market-independent line of evidence)
-            phi_dam, ov_dam, corr_dam = dam_crosscheck(b.res, rid)
+            # candidate's outage days? Scored against THIS mode's own outage calendar.
+            phi_dam, ov_dam, corr_dam = dam_crosscheck(b.res, rid, res_days)
             rec["phi_dam"] = None if np.isnan(phi_dam) else round(phi_dam, 3)
             rec["overlap_days_dam"] = ov_dam
             rec["dam_corroborates"] = corr_dam
             matches.append(rec)
     mdf = pd.DataFrame(matches)
     if len(mdf):
-        mdf = mdf.sort_values(["confidence"], ascending=False).reset_index(drop=True)
+        mdf = mdf.sort_values(
+            ["confidence", "res", "cand_rid"], ascending=[False, True, True]
+        ).reset_index(drop=True)
     return mdf, n_fp
 
 
@@ -1133,11 +1270,19 @@ log("Summarizing raw datasets...")
 
 
 def _bid_dataset(key, name, path, what):
-    n_rows, n_bidders, n_en, dmin, dmax, med_en = con.execute(f"""
+    # Each count is named for exactly the population it covers. These used to blur together
+    # ("...that submit energy offers" equalled the file total, and the per-type breakdown
+    # summed to MORE than the bidder count because ~9 IDs bid under several resource types),
+    # which made the panel disagree with the dashboard's own headline bidder count.
+    n_rows, n_bidders, n_en, n_gen_pos, dmin, dmax, n_days, med_en = con.execute(f"""
       select count(*), count(distinct RESOURCEBID_SEQ),
              count(distinct case when MARKETPRODUCTTYPE='EN' then RESOURCEBID_SEQ end),
+             count(distinct case when MARKETPRODUCTTYPE='EN' and RESOURCE_TYPE='GENERATOR'
+                                  and SCH_BID_XAXISDATA > 0 then RESOURCEBID_SEQ end),
              min(substr(STARTTIME,1,10)), max(substr(STARTTIME,1,10)),
-             median(case when MARKETPRODUCTTYPE='EN' then SCH_BID_Y1AXISDATA end)
+             count(distinct substr(STARTTIME,1,10)),
+             median(case when MARKETPRODUCTTYPE='EN' and SCH_BID_XAXISDATA > 0
+                         then SCH_BID_Y1AXISDATA end)
       from read_parquet('{path}')
     """).fetchone()
     rtypes = con.execute(f"""
@@ -1145,6 +1290,8 @@ def _bid_dataset(key, name, path, what):
       from read_parquet('{path}') where MARKETPRODUCTTYPE='EN' group by 1 order by 2 desc
     """).fetchall()
     rtype_str = ", ".join(f"{rt.lower()} {n:,}" for rt, n in rtypes)
+    if sum(n for _, n in rtypes) > n_en:
+        rtype_str += f" (sums above {n_en:,}: some IDs bid under more than one type)"
     return dict(
         key=key,
         name=name,
@@ -1152,11 +1299,16 @@ def _bid_dataset(key, name, path, what):
         what=what,
         stats=[
             ["Rows (individual price-step offers)", f"{n_rows:,}"],
-            ["Distinct anonymous bidders", f"{n_bidders:,}"],
-            ["…that submit energy offers", f"{n_en:,}"],
-            ["Resource types (energy bidders)", rtype_str],
+            ["Distinct anonymous bidders in the file", f"{n_bidders:,}"],
+            ["…with at least one energy offer", f"{n_en:,}"],
+            [
+                "…generators with a positive-MW energy offer (the population screened)",
+                f"{n_gen_pos:,}",
+            ],
+            ["Resource types (any energy offer)", rtype_str],
             ["Typical energy offer price (median)", f"${med_en:,.0f}/MWh"],
             ["Date coverage", f"{dmin} → {dmax}"],
+            ["Days covered", f"{n_days} of 365 (2025-03-09 absent from the source file)"],
         ],
     )
 
@@ -1213,8 +1365,9 @@ datasets.append(
 )
 
 # day-ahead LMP prices (full scan of the large file — one pass)
-p_rows, p_nodes, p_dmin, p_dmax = con.execute(f"""
-  select count(*), count(distinct NODE_ID), min(OPR_DT), max(OPR_DT)
+p_rows, p_lmp_rows, p_nodes, p_dmin, p_dmax, p_days = con.execute(f"""
+  select count(*), count(*) filter (where LMP_TYPE='LMP'), count(distinct NODE_ID),
+         min(OPR_DT), max(OPR_DT), count(distinct OPR_DT)
   from read_parquet('{LMP}')
 """).fetchone()
 datasets.append(
@@ -1227,7 +1380,12 @@ datasets.append(
         "This is the real market-price data — powering the Prices screen and the price-based / "
         "clearing-price parts of Screen 1.",
         stats=[
-            ["Price observations", f"{p_rows:,}"],
+            # p_rows counts LMP *and* its three components (energy/congestion/loss) as
+            # separate rows, so it is ~4x the number of actual prices. Publishing it alone
+            # next to the node count implied an impossible density (nodes x hours is the
+            # ceiling), so both numbers are named explicitly.
+            ["Rows (LMP plus its 3 components)", f"{p_rows:,}"],
+            ["Node-hour prices", f"{p_lmp_rows:,}"],
             ["Distinct pricing locations (nodes)", f"{p_nodes:,}"],
             ["Trading hubs used here", ", ".join(HUBS.keys()) + " (+ system average)"],
             ["Typical system price (median)", f"${price_stats[1]:,.0f}/MWh"],
@@ -1237,14 +1395,19 @@ datasets.append(
             ],
             ["Negative-price hours", f"{price_stats[3]:,}"],
             ["Date coverage", f"{p_dmin} → {p_dmax}"],
+            ["Days covered", f"{p_days} of 365 (2025-03-09 absent from the source file)"],
         ],
     )
 )
 
 # real-time (RTM) LMP — the 5-minute hub series extracted from the ~50GB raw files
-rtm_5min_rows, rtm_dmin, rtm_dmax = con.execute("""
-  select count(*), min(ts), max(ts) from rtm_5min
+rtm_5min_rows, rtm_dmin, rtm_dmax, rtm_days = con.execute("""
+  select count(*), min(ts), max(ts), count(distinct ts::date) from rtm_5min
 """).fetchone()
+# True SYSTEM 5-minute peak: the highest cross-hub mean in any single 5-minute interval.
+# Distinct from rtm_stats[2], which is the highest hourly AVERAGE, and from max(peak5),
+# which is only "the highest print at any one hub".
+rtm_peak5 = con.execute("select round(max(lmp),2) from rtm_sys5").fetchone()[0]
 datasets.append(
     dict(
         key="rtm_lmp",
@@ -1258,16 +1421,16 @@ datasets.append(
             ["5-minute hub observations kept", f"{rtm_5min_rows:,}"],
             ["Trading hubs used here", ", ".join(HUBS.keys()) + " (+ system average)"],
             ["Typical system price (median)", f"${rtm_stats[1]:,.0f}/MWh"],
-            [
-                "Average / peak system price",
-                f"${rtm_stats[0]:,.0f} / ${rtm_stats[2]:,.0f}/MWh",
-            ],
+            ["Average system price", f"${rtm_stats[0]:,.0f}/MWh"],
+            ["Peak hourly average", f"${rtm_stats[2]:,.0f}/MWh"],
+            ["Peak 5-minute system price", f"${rtm_peak5:,.0f}/MWh"],
             [
                 "DAM→RTM spread (mean ± sd)",
                 f"${spread_stats[0]:,.1f} ± ${spread_stats[1]:,.1f}/MWh",
             ],
             ["Negative-price hours", f"{rtm_stats[3]:,}"],
             ["Date coverage", f"{rtm_dmin} → {rtm_dmax}"],
+            ["Days covered", f"{rtm_days} of 365"],
         ],
     )
 )
@@ -1278,9 +1441,31 @@ datasets.append(
 overview = con.execute("""
 select count(distinct res) n_res, min(day) tmin, max(day) tmax from rh
 """).fetchone()
+# Actual day coverage. 2025-03-09 (the spring DST switch) is absent from BOTH bid files and
+# the DAM LMP file, so "full year" was never true; warn loudly if that ever changes shape.
+n_bid_days = con.execute("select count(distinct day) from rh").fetchone()[0]
+_span_days = (pd.Timestamp(overview[2]) - pd.Timestamp(overview[1])).days + 1
+if n_bid_days != _span_days:
+    log(
+        f"  NOTE: {_span_days - n_bid_days} calendar day(s) in "
+        f"{overview[1]}..{overview[2]} have no bids at all ({n_bid_days} of {_span_days} present)"
+    )
 meta = dict(
-    generated_scope="CAISO RTM 2025 (full year)",
+    generated_scope=(
+        f"CAISO RTM 2025 ({n_bid_days} of 365 days; 2025-03-09 absent from both bid files "
+        "and the day-ahead price file. The 5-minute real-time price file does cover it.)"
+    ),
     n_bid_rows=int(con.execute(f"select count(*) from read_parquet('{BIDS}')").fetchone()[0]),
+    # The rows the screens actually consume: positive-MW priced ENERGY steps from
+    # generators. n_bid_rows above is every price step of every product in the file, so it
+    # must not be labelled "offers analyzed" anywhere in the UI.
+    n_bid_rows_analyzed=int(
+        con.execute(f"""select count(*) from read_parquet('{BIDS}')
+           where MARKETPRODUCTTYPE='EN' and RESOURCE_TYPE='GENERATOR'
+             and SCH_BID_XAXISDATA is not null and SCH_BID_XAXISDATA > 0""").fetchone()[0]
+    ),
+    n_bid_days=int(n_bid_days),
+    n_bid_hours=int(con.execute("select count(distinct h) from rh").fetchone()[0]),
     n_resources=int(overview[0]),
     date_min=str(overview[1]),
     date_max=str(overview[2]),
@@ -1342,7 +1527,7 @@ meta = dict(
     reident_dam_corroborated_magnitude=dam_corr_mag,
     assumptions=[
         "Screen 1 runs on two bid markets you can toggle: real-time (RTM, the default) and day-ahead (DAM). Because the price data is day-ahead, the DAM market lets Screen 1 compare offers against the ACTUAL day-ahead clearing price — a real impact test — while RTM keeps the original design.",
-        "Screen 1 can define 'how short the grid was' three ways: by outages (how much plant capacity was offline — the original stand-in), by day-ahead prices (hours when the DAM market price spiked), or by real-time prices (hours when the 5-minute RTM price spiked, which catches intra-hour scarcity the hourly day-ahead price flattens). Both price bases use the top 10% of hours at the three CAISO trading hubs; the outage basis needs no price data at all.",
+        "Screen 1 can define 'how short the grid was' three ways: by outages (how much plant capacity was offline — the original stand-in), by day-ahead prices (hours when the DAM market price spiked), or by real-time prices (hours whose AVERAGE 5-minute real-time price was in the top 10%). Because that is an hourly average, a single 5-minute spike inside an otherwise cheap hour does not by itself mark the hour scarce. Both price bases use the top 10% of hours at the three CAISO trading hubs; the outage basis needs no price data at all.",
         "The real clearing-price impact test (DAM market) measures the capacity a GENERATOR offered ABOVE the price that actually cleared that hour — capacity it effectively withheld from the day-ahead solution — comparing scarce vs. normal hours. It covers generators only (day-ahead demand and intertie bids are excluded, since a load bidding above the price is willingness-to-pay, not withheld supply) and is measured at the system/hub price level because bids carry no node identifier.",
         "There's no fuel-cost data, so 'holding back power' is still judged by comparing each plant to its own behavior in short vs. normal hours — the clearing price sharpens the 'high offer' threshold but does not prove intent.",
         "Outages come from CAISO's daily 'prior trade date' reports. A row with no end time means the outage was still ongoing as of that report's trade date, so we treat it as active through that date — not a one-hour blip. Outages that began before 2025 but were still active are clipped into the 2025 window, and the same ongoing outage re-listed across many daily reports is collapsed so it is counted once. CAISO also files one physical curtailment as many overlapping records — split across sub-intervals and re-issued under different outage IDs, each carrying the same megawatts — so for each hour we count only a plant's DEEPEST curtailment and then add across plants. Adding the records up instead would invent capacity that was never offline, most of all in November and December 2025.",
