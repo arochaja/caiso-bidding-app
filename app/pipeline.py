@@ -175,8 +175,8 @@ con.execute(f"""
 create or replace table outg_seg as
 select
   "OUTAGE MRID"                     as mrid,
-  any_value("RESOURCE ID")          as rid,
-  any_value("RESOURCE NAME")        as rname,
+  min("RESOURCE ID")                as rid,   -- deterministic (see build_wh)
+  min("RESOURCE NAME")              as rname,
   "OUTAGE TYPE"                     as otype,
   "CURTAILMENT START DATE TIME"     as ostart_raw,
   max("CURTAILMENT END FILLED")     as oend_filled,
@@ -657,7 +657,9 @@ def build_wh(market, rh_table, basis, flagcol):
     con.execute(f"""
     create or replace table wh_{tag} as
     with agg as (
-      select res, any_value(sc) as sc, any_value(is_storage) as is_storage,
+      -- min()/bool_or(), not any_value(): a resource can carry different SCs across hours,
+      -- so an arbitrary pick made this table differ between identical runs.
+      select res, min(sc) as sc, bool_or(is_storage) as is_storage,
         count(*) as en_hours,
         sum(case when is_tight then 1 else 0 end) as tight_hours,
         sum(case when is_tight then cap     else 0 end) as cap_t,
@@ -809,7 +811,7 @@ where oend_filled >= timestamp '2025-01-01'
 # resource metadata (name / PMAX / NQC / storage tag) from the union of
 # forced+planned records, so planned-only resources are candidates too.
 res_intervals = con.execute("""
-select rid, any_value(rname) rname, max(pmax) pmax, max(nqc) nqc from outg_reid group by rid
+select rid, min(rname) rname, max(pmax) pmax, max(nqc) nqc from outg_reid group by rid
 """).fetchdf()
 
 
@@ -1024,8 +1026,8 @@ def dam_crosscheck(res, cand_rid, res_days):
     return float(phi), int(inter), bool(phi >= 0.30 and inter >= 3)
 
 
-def run_reident(res_days, magnitude=False):
-    """Score every fingerprint-able bidder against PMAX-matching candidate resources.
+def run_reident(res_days, magnitude=False, gated=True, topk=3):
+    """Score bidders against PMAX-matching candidate resources.
 
     Binary modes (magnitude=False): confidence = 0.60*phi + 0.25*size + 0.15*type,
       admitting candidates whose timing overlap phi >= 0.30.
@@ -1033,6 +1035,13 @@ def run_reident(res_days, magnitude=False):
       fraction against the bidder's daily offered-reduction (Spearman rho), admit on
       strong timing OR strong magnitude, and blend
       confidence = 0.35*phi + 0.30*rho + 0.25*size + 0.10*type.
+
+    gated=True reproduces the published screens: only fingerprint-able bidders are
+    scored and only admitted candidates are kept. gated=False scores EVERY bidder with
+    a usable capacity and keeps its best `topk` candidates regardless of whether the
+    admission tests pass, tagging each row with `admitted` and `fingerprintable`. That
+    powers the per-bidder lookup panel, which must return the best available answer for
+    any ID a user pastes in — including "the only thing matching here is size".
     Returns (sorted DF, n_fingerprintable)."""
     res_list = [
         (rid, res_meta[rid]["pmax"])
@@ -1051,19 +1060,28 @@ def run_reident(res_days, magnitude=False):
         if not cap or cap <= 0:
             continue
         dips = bidder_dip_days.get(b.res, set())
-        N = span_len[b.res]
+        N = span_len.get(b.res, 0)
+        if not N or b.res not in span_first:
+            continue
         if magnitude:
             # fingerprint-able if it has a clear dip pattern OR sustained partial reduction
-            if b.res not in span_days or N < 30 or len(dips) > 0.85 * N:
-                continue
-            red_days = int(np.count_nonzero(bidder_reduction[b.res] >= 0.10))
-            if len(dips) < 3 and red_days < 10:
-                continue
+            red_days = (
+                int(np.count_nonzero(bidder_reduction[b.res] >= 0.10))
+                if b.res in bidder_reduction
+                else 0
+            )
+            fingerprintable = (
+                b.res in span_days
+                and N >= 30
+                and len(dips) <= 0.85 * N
+                and (len(dips) >= 3 or red_days >= 10)
+            )
         else:
             # need a specific, non-degenerate dip pattern to fingerprint on
-            if len(dips) < 3 or N < 30 or len(dips) > 0.7 * N:
-                continue
-        n_fp += 1
+            fingerprintable = 3 <= len(dips) <= 0.7 * N and N >= 30
+        if gated and not fingerprintable:
+            continue
+        n_fp += fingerprintable
         # Candidate PMAX window. Inverted on purpose: the published size gap (cap_diff_pct,
         # and cap_close below) divides by PMAX, so a window of cap*(1 +/- TOL) let matches
         # through at |cap-pmax|/pmax = TOL/(1-TOL) = 13.6% under a stated +/-12% rule.
@@ -1107,7 +1125,8 @@ def run_reident(res_days, magnitude=False):
             if magnitude:
                 phi_ok = phi >= 0.30 and inter >= 3
                 rho_ok = (not np.isnan(rho)) and rho >= 0.35  # balanced guard
-                if not (phi_ok or rho_ok):
+                admitted = bool(phi_ok or rho_ok)
+                if gated and not admitted:
                     continue
                 conf = (
                     0.35 * max(phi, 0.0)
@@ -1116,24 +1135,26 @@ def run_reident(res_days, magnitude=False):
                     + (0.10 if stor_match else 0.0)
                 )
             else:
-                if phi < 0.30 or inter < 3:  # require distinctive timing coincidence
+                admitted = bool(phi >= 0.30 and inter >= 3)  # distinctive timing coincidence
+                if gated and not admitted:
                     continue
                 conf = 0.60 * phi + 0.25 * cap_close + (0.15 if stor_match else 0.0)
             recall = inter / len(dips) if dips else 0.0
             jacc = inter / len(dips | odays_span) if (dips or odays_span) else 0.0
-            cands.append((rid, pmax, cap_close, recall, jacc, phi, conf, inter, rho))
+            cands.append((rid, pmax, cap_close, recall, jacc, phi, conf, inter, rho, admitted))
         cands.sort(key=lambda x: -x[6])
         for rank, (
             rid,
             pmax,
-            _cap_close,
+            cap_close,
             recall,
             jacc,
             phi,
             conf,
             inter,
             rho,
-        ) in enumerate(cands[:3], start=1):
+            admitted,
+        ) in enumerate(cands[:topk], start=1):
             m = res_meta[rid]
             rec = dict(
                 res=b.res,
@@ -1154,6 +1175,12 @@ def run_reident(res_days, magnitude=False):
             )
             if magnitude:
                 rec["rho"] = None if np.isnan(rho) else round(float(rho), 3)
+            if not gated:
+                rec["admitted"] = bool(admitted)
+                rec["fingerprintable"] = bool(fingerprintable)
+                rec["size_match"] = round(float(cap_close), 3)
+                rec["type_match"] = bool(stor_match)
+                rec["span_days"] = int(N)
             # day-ahead cross-check: does the bidder also go quiet in DAM on this
             # candidate's outage days? Scored against THIS mode's own outage calendar.
             phi_dam, ov_dam, corr_dam = dam_crosscheck(b.res, rid, res_days)
@@ -1173,6 +1200,9 @@ log("  scoring fingerprints (forced; forced+planned; magnitude-aware)...")
 mdf_forced, fp_forced = run_reident(res_days_forced)
 mdf_combined, fp_comb = run_reident(res_days_combined)
 mdf_magnitude, fp_mag = run_reident(res_days_combined, magnitude=True)
+# Ungated top-5 per bidder for the lookup panel (Stage 5 writes it). Computed here so the
+# daily outage overlay built below also covers plants that only appear as lookup candidates.
+mdf_lookup, _fp_lookup = run_reident(res_days_combined, magnitude=True, gated=False, topk=5)
 
 mdf_forced.to_parquet(f"{OUT}/reident_matches_forced.parquet", index=False)
 mdf_combined.to_parquet(f"{OUT}/reident_matches_combined.parquet", index=False)
@@ -1246,7 +1276,7 @@ log(
 # daily outage overlay for the drill-down. Tag each candidate day forced vs
 # planned (forced precedence); cover candidates from ALL result sets.
 cand_ids = set()
-for mdf in (mdf_forced, mdf_combined, mdf_magnitude):
+for mdf in (mdf_forced, mdf_combined, mdf_magnitude, mdf_lookup):
     if len(mdf):
         cand_ids |= set(mdf["cand_rid"].unique())
 rod = []
@@ -1262,6 +1292,214 @@ for rid in cand_ids:
 pd.DataFrame(rod, columns=["rid", "day", "kind", "curt_mw", "pmax"]).to_parquet(
     f"{OUT}/resource_outage_daily.parquet", index=False
 )
+
+# =====================================================================
+# Stage 5: per-bidder LOOKUP artifacts (the "Look up a bidder" panel)
+#   Everything above is built for population-level screens: they keep only the top
+#   scorers, or only bidders that cleared an admission gate. A lookup panel has the
+#   opposite requirement — it must answer for ANY id a user pastes, including ids the
+#   screens deliberately drop (interties, loads, bidders with no timing signal). These
+#   tables are all small (thousands of rows), so they are cheap to carry.
+# =====================================================================
+log("Stage 5: per-bidder lookup tables...")
+
+# 5a. Directory of EVERY bidder id in either file, whatever its resource type, so a
+# pasted id always resolves — and the panel can say "this is an intertie, not screened"
+# instead of showing an empty page.
+_dir_parts = []
+for market, path in MARKETS.items():
+    _dir_parts.append(f"""
+    select '{market}' as market,
+           RESOURCEBID_SEQ                            as res,
+           min(SCHEDULINGCOORDINATOR_SEQ)             as sc,
+           min(RESOURCE_TYPE)                         as resource_type,
+           count(distinct RESOURCE_TYPE)              as n_resource_types,
+           count(distinct MARKETPRODUCTTYPE)          as n_products,
+           string_agg(distinct MARKETPRODUCTTYPE, ',' order by MARKETPRODUCTTYPE) as products,
+           count(*)                                   as n_rows,
+           count(distinct substr(STARTTIME,1,10))      as n_days,
+           min(substr(STARTTIME,1,10))                as first_day,
+           max(substr(STARTTIME,1,10))                as last_day,
+           coalesce(sum(case when MARKETPRODUCTTYPE='EN' and SCH_BID_XAXISDATA > 0
+                             then 1 else 0 end), 0)   as n_priced_en_rows,
+           coalesce(sum(case when coalesce(SELFSCHEDMW,0) > 0 then 1 else 0 end), 0)
+                                                      as n_selfsched_rows,
+           max(case when MARKETPRODUCTTYPE='EN' then SCH_BID_XAXISDATA end) as en_cap_max,
+           median(case when MARKETPRODUCTTYPE='EN' and SCH_BID_XAXISDATA > 0
+                       then SCH_BID_Y1AXISDATA end)   as med_en_price,
+           max(coalesce(SELFSCHEDMW,0))               as selfsched_mw_max
+    from read_parquet('{path}')
+    group by RESOURCEBID_SEQ
+    """)
+con.execute(f"""
+copy ({" union all ".join(_dir_parts)} order by res, market)
+to '{OUT}/bidder_directory.parquet' (format parquet)
+""")
+
+# 5b. Named-plant catalog (name / PMAX / NQC / storage tag / outage-day counts). res_meta
+# already holds this in memory for the fingerprint screens but was never published, so the
+# lookup panel had no way to describe a candidate plant.
+_cat = []
+for rid, meta_ in res_meta.items():
+    _cat.append(
+        dict(
+            rid=rid,
+            rname=meta_["rname"],
+            pmax=meta_["pmax"],
+            nqc=meta_["nqc"],
+            is_storage=bool(meta_["storage"]),
+            forced_days=len(res_days_forced.get(rid, ())),
+            planned_days=len(res_days_planned.get(rid, ())),
+            outage_days=len(res_days_combined.get(rid, ())),
+        )
+    )
+pd.DataFrame(_cat).sort_values("rname").to_parquet(f"{OUT}/plant_catalog.parquet", index=False)
+
+# 5c. Top-5 candidate plants for EVERY bidder, ungated. Scored on the forced+planned
+# calendar with the magnitude signal available, so each row carries timing (phi), size,
+# type and curtailment-tracking (rho) evidence plus an `admitted` flag saying whether the
+# published screens would have accepted it. A bidder whose only evidence is a capacity
+# coincidence still gets rows — clearly marked as such, which is the honest answer.
+if len(mdf_lookup):
+    mdf_lookup = mdf_lookup.sort_values(["res", "rank"]).reset_index(drop=True)
+mdf_lookup.to_parquet(f"{OUT}/bidder_candidates.parquet", index=False)
+log(
+    f"  lookup candidates: {len(mdf_lookup):,} rows for {mdf_lookup['res'].nunique():,} bidders "
+    f"({int(mdf_lookup['admitted'].sum()):,} would clear the published gate)"
+    if len(mdf_lookup)
+    else "  lookup candidates: none"
+)
+
+# 5d. Day-ahead daily capacity for every bidder (the RTM twin already exists as
+# bidder_daily_cap), so the profile can chart both markets for any id — not just the
+# few hundred matched bidders covered by bidder_hourly_cap*.
+con.execute(f"""
+copy (
+  select res, day, max(cap) as cap from rh_dam group by res, day order by res, day
+) to '{OUT}/bidder_daily_cap_dam.parquet' (format parquet)
+""")
+
+# 5e. Monthly activity per bidder per market, for the profile's shape-over-time view.
+con.execute(f"""
+copy (
+  select 'RTM' as market, res, date_trunc('month', h) as month, count(*) as hours,
+         max(cap) as cap_max, avg(cap) as cap_avg, median(max_price) as med_price
+  from rh group by res, date_trunc('month', h)
+  union all
+  select 'DAM' as market, res, date_trunc('month', h) as month, count(*) as hours,
+         max(cap) as cap_max, avg(cap) as cap_avg, median(max_price) as med_price
+  from rh_dam group by res, date_trunc('month', h)
+  order by res, market, month
+) to '{OUT}/bidder_monthly.parquet' (format parquet)
+""")
+
+# 5f. ANONYMITY CONTEXT from the CEC power-plant list (optional raw input).
+#   How many REAL California plants could a bidder be, judging only by things visible in
+#   the bid data — its size, and the technology implied by how it bids? That count is the
+#   honest denominator for Screen 2's whole question: a bidder matching 25 real plants on
+#   size is not identifiable from size, however confident a single candidate looks.
+#
+#   Deliberately NO name matching. The CEC list carries no CAISO resource id, so any
+#   bidder->plant link would be a fuzzy string join: only ~50% of outage-file plant names
+#   match at all, and a quarter of those disagree with PMAX by >50% (the outage file is
+#   per-resource, CEC is per-plant). A wrong join would attach a real operator's name to
+#   the wrong plant. We publish COUNTS ONLY, so no individual CEC row is ever asserted to
+#   be a given bidder — and because the counts are precomputed here, the CSV stays a raw
+#   input that the deployed app never needs.
+PP_CSV = os.path.join(DATA, "powerplants.csv")
+if os.path.exists(PP_CSV):
+    log("Stage 5f: anonymity context from the CEC plant list...")
+    _pp = pd.read_csv(PP_CSV)
+    _pp = _pp[
+        (_pp["Retired Plant"] == 0) & _pp["Capacity_Latest"].notna() & (_pp["Capacity_Latest"] > 0)
+    ]
+    # Technology implied by the bid data alone -- never by a plant name.
+    #   storage : the bid carries state-of-charge limits (only storage does)
+    #   solar   : offers essentially never appear overnight and cluster in daylight
+    _shape = con.execute("""
+      select res,
+             sum(case when hour(h) between 8 and 17 then 1 else 0 end) as day_h,
+             sum(case when hour(h) between 0 and 5  then 1 else 0 end) as night_h,
+             count(*) as tot_h
+      from rh group by res
+    """).fetchdf()
+    _b = bidder[["res", "cap_ref", "is_storage"]].merge(_shape, on="res", how="left")
+    _b["solar_like"] = (_b["night_h"] / _b["tot_h"] < 0.02) & (_b["day_h"] / _b["tot_h"] > 0.55)
+    _b["tech"] = np.where(
+        _b["is_storage"].astype(bool), "storage", np.where(_b["solar_like"], "solar", "other")
+    )
+    _FUEL = {"storage": {"BAT"}, "solar": {"SUN", "HBD"}}
+    _caps = {
+        "any": np.sort(_pp["Capacity_Latest"].to_numpy(dtype=float)),
+        "storage": np.sort(
+            _pp.loc[_pp["PriEnergySource"].isin(_FUEL["storage"]), "Capacity_Latest"].to_numpy(
+                dtype=float
+            )
+        ),
+        "solar": np.sort(
+            _pp.loc[_pp["PriEnergySource"].isin(_FUEL["solar"]), "Capacity_Latest"].to_numpy(
+                dtype=float
+            )
+        ),
+        "other": np.sort(
+            _pp.loc[
+                ~_pp["PriEnergySource"].isin(_FUEL["storage"] | _FUEL["solar"]), "Capacity_Latest"
+            ].to_numpy(dtype=float)
+        ),
+    }
+
+    def _n_within(arr, cap):
+        # same inverted window as the candidate gate: |cap-plant|/plant <= CAP_TOL
+        lo, hi = cap / (1 + CAP_TOL), cap / (1 - CAP_TOL)
+        return int(np.searchsorted(arr, hi, "right") - np.searchsorted(arr, lo, "left"))
+
+    # Coverage floor. The CEC list is a PLANT inventory: only 67 of its entries are under
+    # 1 MW (its 5th percentile), so for a sub-MW bidder a count of 0 or 1 says the list does
+    # not cover that size range — NOT that the bidder is distinctive. Without this the panel
+    # would report 154 sub-MW bidders as "nearly identified by size alone", which is false.
+    _cec_floor = float(np.quantile(_caps["any"], 0.05))
+    _rows = []
+    for r in _b.itertuples(index=False):
+        cap = float(r.cap_ref or 0)
+        if cap <= 0:
+            continue
+        _rows.append(
+            dict(
+                res=r.res,
+                tech=r.tech,
+                cap_ref=round(cap, 2),
+                n_plants_size=_n_within(_caps["any"], cap),
+                n_plants_size_tech=_n_within(_caps[r.tech], cap),
+                n_plants_tech_total=int(len(_caps[r.tech])),
+                below_cec_floor=bool(cap < _cec_floor),
+            )
+        )
+    _anon = pd.DataFrame(_rows)
+    _anon.to_parquet(f"{OUT}/bidder_anonymity.parquet", index=False)
+    # Headline stats are quoted for bidders the CEC list actually covers; the sub-MW tail
+    # would otherwise drag the median down and manufacture false "unique" cases.
+    _cov = _anon[~_anon["below_cec_floor"]] if len(_anon) else _anon
+    anon_stats = dict(
+        cec_plants=int(len(_pp)),
+        cec_floor_mw=round(_cec_floor, 2),
+        bidders=int(len(_anon)),
+        bidders_covered=int(len(_cov)),
+        bidders_below_floor=int(len(_anon) - len(_cov)),
+        median_size_matches=int(_cov["n_plants_size"].median()) if len(_cov) else 0,
+        median_size_tech_matches=int(_cov["n_plants_size_tech"].median()) if len(_cov) else 0,
+        unique_on_size_tech=int((_cov["n_plants_size_tech"] == 1).sum()) if len(_cov) else 0,
+        thin_on_size_tech=int((_cov["n_plants_size_tech"].between(1, 5)).sum()) if len(_cov) else 0,
+    )
+    log(
+        f"  CEC plants: {anon_stats['cec_plants']:,}; of the {anon_stats['bidders_covered']:,} "
+        f"bidders at or above {anon_stats['cec_floor_mw']:g} MW, a typical one's size+technology "
+        f"matches {anon_stats['median_size_tech_matches']} of them and only "
+        f"{anon_stats['unique_on_size_tech']} are unique on that alone "
+        f"({anon_stats['bidders_below_floor']:,} smaller bidders are below the list's coverage)"
+    )
+else:
+    anon_stats = None
+    log(f"  NOTE: {PP_CSV} not found — skipping anonymity context (Screen 3 hides that panel)")
 
 # =====================================================================
 # Dataset summary statistics (for the "Data behind this tool" panel)
@@ -1435,6 +1673,44 @@ datasets.append(
     )
 )
 
+# CEC plant list — documented because it IS an outside dataset, even though only
+# aggregate counts derived from it are published (see Stage 5f).
+if anon_stats:
+    datasets.append(
+        dict(
+            key="cec_plants",
+            name="California power plants (CEC)",
+            file="powerplants.csv",
+            what="The California Energy Commission's public list of power plants: name, "
+            "operator, county, fuel, nameplate capacity and coordinates. It carries NO CAISO "
+            "resource ID, so it is never joined to a bidder by name. It is used for one thing "
+            "only: counting how many real plants share a bidder's size and technology, which "
+            "is the denominator for how identifiable that bidder actually is (Screen 3). No "
+            "plant name, operator or location from this file is attributed to any bidder.",
+            stats=[
+                ["Plants (in service, with a capacity)", f"{anon_stats['cec_plants']:,}"],
+                [
+                    "Plants sharing a typical bidder's size",
+                    f"{anon_stats['median_size_matches']} (median)",
+                ],
+                [
+                    "...also sharing its technology",
+                    f"{anon_stats['median_size_tech_matches']} (median)",
+                ],
+                [
+                    "Bidders unique on size + technology alone",
+                    f"{anon_stats['unique_on_size_tech']:,} of {anon_stats['bidders_covered']:,}",
+                ],
+                [
+                    "Bidders too small for the list to cover",
+                    f"{anon_stats['bidders_below_floor']:,} (under "
+                    f"{anon_stats['cec_floor_mw']:g} MW)",
+                ],
+                ["Used for", "Anonymity context only — no names joined"],
+            ],
+        )
+    )
+
 # =====================================================================
 # meta.json
 # =====================================================================
@@ -1465,6 +1741,7 @@ meta = dict(
              and SCH_BID_XAXISDATA is not null and SCH_BID_XAXISDATA > 0""").fetchone()[0]
     ),
     n_bid_days=int(n_bid_days),
+    anonymity=anon_stats,
     n_bid_hours=int(con.execute("select count(distinct h) from rh").fetchone()[0]),
     n_resources=int(overview[0]),
     date_min=str(overview[1]),

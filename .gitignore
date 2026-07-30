@@ -1,6 +1,9 @@
 # --- data (not tracked; supplied locally) ---
 # keep the caiso-data/ folder + its README placeholder, ignore the actual data files
 caiso-data/*.parquet
+# CEC plant list: a raw input like the parquets. Stage 5f reduces it to aggregate counts
+# in bidder_anonymity.parquet (which IS committed), so the deployed app never reads it.
+caiso-data/*.csv
 # real-time LMP: ~50GB of nested parquets (monthly files + a "december parts/" folder)
 caiso-data/2025-RTM-LMP/
 # NOTE: app/data/derived/ IS committed so the deployed app has its data.
