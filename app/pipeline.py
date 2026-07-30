@@ -172,13 +172,30 @@ where otype='FORCED'
 """)
 
 con.execute("create or replace table hours as select distinct h from rh order by h")
+# Hourly tightness at the RESOURCE grain: each resource contributes its DEEPEST active
+# curtailment for the hour, then we add across resources. Never sum cmw across segments —
+# CAISO files one physical curtailment as many overlapping segments, all carrying the same
+# MW, and summing them invents capacity that was never offline:
+#   * one MRID is re-filed as chained sub-intervals (08:00->09:37, 09:37->15:00, ...), and
+#     date_trunc above pulls 09:37 back to 09:00, so at hour 09 both the ending and the
+#     starting sub-interval match the join (~3-8% of MW every month); and
+#   * one curtailment is re-filed under many MRIDs — SunZia Wind North/South alone arrive
+#     in late Oct 2025 with ~70 MRIDs each (~8-9% of MW in Nov/Dec).
+# Together those inflated December by 18% and put 24% of "system-tight" hours in the set
+# for the wrong reason. Per-resource max fixes both at once. Validated against CAISO's own
+# trade-date snapshot for 2025-12-17: 26,901 MW here vs 26,903 MW in CAISO's report.
 con.execute("""
 create or replace table tight as
 select hh.h as h,
-       coalesce(sum(o.cmw),0) as tight_mw,
-       count(o.rid)          as n_out
+       coalesce(sum(r.rmw),0) as tight_mw,
+       count(r.rid)           as n_out
 from hours hh
-left join outg o on (hh.h >= o.ostart and hh.h < o.oend)
+left join (
+  select hh2.h as h, o.rid as rid, max(o.cmw) as rmw
+  from hours hh2
+  join outg o on (hh2.h >= o.ostart and hh2.h < o.oend)
+  group by hh2.h, o.rid
+) r on r.h = hh.h
 group by hh.h
 """)
 tight_thr = con.execute(f"select quantile_cont(tight_mw,{TIGHT_PCTL}) from tight").fetchone()[0]
@@ -1323,7 +1340,7 @@ meta = dict(
         "Screen 1 can define 'how short the grid was' three ways: by outages (how much plant capacity was offline — the original stand-in), by day-ahead prices (hours when the DAM market price spiked), or by real-time prices (hours when the 5-minute RTM price spiked, which catches intra-hour scarcity the hourly day-ahead price flattens). Both price bases use the top 10% of hours at the three CAISO trading hubs; the outage basis needs no price data at all.",
         "The real clearing-price impact test (DAM market) measures the capacity a GENERATOR offered ABOVE the price that actually cleared that hour — capacity it effectively withheld from the day-ahead solution — comparing scarce vs. normal hours. It covers generators only (day-ahead demand and intertie bids are excluded, since a load bidding above the price is willingness-to-pay, not withheld supply) and is measured at the system/hub price level because bids carry no node identifier.",
         "There's no fuel-cost data, so 'holding back power' is still judged by comparing each plant to its own behavior in short vs. normal hours — the clearing price sharpens the 'high offer' threshold but does not prove intent.",
-        "Outages come from CAISO's daily 'prior trade date' reports. A row with no end time means the outage was still ongoing as of that report's trade date, so we treat it as active through that date — not a one-hour blip. Outages that began before 2025 but were still active are clipped into the 2025 window, and the same ongoing outage re-listed across many daily reports is collapsed so it is counted once.",
+        "Outages come from CAISO's daily 'prior trade date' reports. A row with no end time means the outage was still ongoing as of that report's trade date, so we treat it as active through that date — not a one-hour blip. Outages that began before 2025 but were still active are clipped into the 2025 window, and the same ongoing outage re-listed across many daily reports is collapsed so it is counted once. CAISO also files one physical curtailment as many overlapping records — split across sub-intervals and re-issued under different outage IDs, each carrying the same megawatts — so for each hour we count only a plant's DEEPEST curtailment and then add across plants. Adding the records up instead would invent capacity that was never offline, most of all in November and December 2025.",
         "Each offer is a set of (amount, price) steps with prices that only go up; a plant's 'capacity' is the largest amount it offered.",
         "Unmasking (Screen 2) matches a bidder's quiet days against a plant's outage days (three methods: forced, forced+planned, magnitude-aware). Each match is cross-checked against the DAY-AHEAD offers: if the bidder also goes quiet in DAM on the plant's outage days, that is a second, market-independent line of evidence.",
     ],

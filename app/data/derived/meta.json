@@ -174,21 +174,21 @@
     "elevated_price": 250.0,
     "nearcap_price": 900.0,
     "tight_percentile": 0.9,
-    "tight_mw": 16780.9,
+    "tight_mw": 14742.2,
     "price_tight_percentile": 0.9,
     "price_tight_lmp": 54.4,
     "price_tight_lmp_rtm": 53.8,
     "cap_tolerance_pct": 12.0,
     "min_tight_hours": 200
   },
-  "withholding_scored": 1261,
-  "withholding_scored_outage": 1261,
+  "withholding_scored": 1277,
+  "withholding_scored_outage": 1277,
   "withholding_scored_price": 1325,
   "withholding_scored_by": {
-    "RTM_outage": 1261,
+    "RTM_outage": 1277,
     "RTM_price": 1325,
     "RTM_price_rtm": 1296,
-    "DAM_outage": 573,
+    "DAM_outage": 579,
     "DAM_price": 548,
     "DAM_price_rtm": 531
   },
@@ -237,7 +237,7 @@
     "Screen 1 can define 'how short the grid was' three ways: by outages (how much plant capacity was offline \u2014 the original stand-in), by day-ahead prices (hours when the DAM market price spiked), or by real-time prices (hours when the 5-minute RTM price spiked, which catches intra-hour scarcity the hourly day-ahead price flattens). Both price bases use the top 10% of hours at the three CAISO trading hubs; the outage basis needs no price data at all.",
     "The real clearing-price impact test (DAM market) measures the capacity a GENERATOR offered ABOVE the price that actually cleared that hour \u2014 capacity it effectively withheld from the day-ahead solution \u2014 comparing scarce vs. normal hours. It covers generators only (day-ahead demand and intertie bids are excluded, since a load bidding above the price is willingness-to-pay, not withheld supply) and is measured at the system/hub price level because bids carry no node identifier.",
     "There's no fuel-cost data, so 'holding back power' is still judged by comparing each plant to its own behavior in short vs. normal hours \u2014 the clearing price sharpens the 'high offer' threshold but does not prove intent.",
-    "Outages come from CAISO's daily 'prior trade date' reports. A row with no end time means the outage was still ongoing as of that report's trade date, so we treat it as active through that date \u2014 not a one-hour blip. Outages that began before 2025 but were still active are clipped into the 2025 window, and the same ongoing outage re-listed across many daily reports is collapsed so it is counted once.",
+    "Outages come from CAISO's daily 'prior trade date' reports. A row with no end time means the outage was still ongoing as of that report's trade date, so we treat it as active through that date \u2014 not a one-hour blip. Outages that began before 2025 but were still active are clipped into the 2025 window, and the same ongoing outage re-listed across many daily reports is collapsed so it is counted once. CAISO also files one physical curtailment as many overlapping records \u2014 split across sub-intervals and re-issued under different outage IDs, each carrying the same megawatts \u2014 so for each hour we count only a plant's DEEPEST curtailment and then add across plants. Adding the records up instead would invent capacity that was never offline, most of all in November and December 2025.",
     "Each offer is a set of (amount, price) steps with prices that only go up; a plant's 'capacity' is the largest amount it offered.",
     "Unmasking (Screen 2) matches a bidder's quiet days against a plant's outage days (three methods: forced, forced+planned, magnitude-aware). Each match is cross-checked against the DAY-AHEAD offers: if the bidder also goes quiet in DAM on the plant's outage days, that is a second, market-independent line of evidence."
   ]
