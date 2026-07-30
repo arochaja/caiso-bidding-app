@@ -1051,7 +1051,10 @@ def run_reident(res_days, magnitude=False, gated=True, topk=3):
         and not np.isnan(res_meta[rid]["pmax"])
         and len(res_days[rid]) >= 4
     ]
-    res_list.sort(key=lambda x: x[1])
+    # Sort by PMAX, then by rid: ties must break deterministically. Python's sort is stable,
+    # so without the rid the order fell through to however DuckDB happened to return the
+    # outage rows that run, which then decided WHICH tied candidates survived cands[:topk].
+    res_list.sort(key=lambda x: (x[1], x[0]))
     res_pmax = np.array([p for _, p in res_list]) if res_list else np.array([0.0])
     res_ids = [r for r, _ in res_list]
     matches, n_fp = [], 0
@@ -1142,7 +1145,10 @@ def run_reident(res_days, magnitude=False, gated=True, topk=3):
             recall = inter / len(dips) if dips else 0.0
             jacc = inter / len(dips | odays_span) if (dips or odays_span) else 0.0
             cands.append((rid, pmax, cap_close, recall, jacc, phi, conf, inter, rho, admitted))
-        cands.sort(key=lambda x: -x[6])
+        # Confidence, then rid. Candidates frequently tie (identical size match, no timing
+        # signal), and the truncation below keeps only the first few — so an unstable tie
+        # order silently changed the published match lists between otherwise identical runs.
+        cands.sort(key=lambda x: (-x[6], x[0]))
         for rank, (
             rid,
             pmax,
@@ -1187,6 +1193,12 @@ def run_reident(res_days, magnitude=False, gated=True, topk=3):
             rec["phi_dam"] = None if np.isnan(phi_dam) else round(phi_dam, 3)
             rec["overlap_days_dam"] = ov_dam
             rec["dam_corroborates"] = corr_dam
+            if not gated:
+                # Denominators for the day-ahead side, so the lookup panel can state the
+                # cross-check symmetrically with the real-time one ("N of M quiet days")
+                # instead of showing an overlap count with nothing to compare it against.
+                rec["dip_days_dam"] = len(bidder_dip_days_dam.get(b.res, set()))
+                rec["span_days_dam"] = int(dam_span[b.res][2]) if b.res in dam_span else 0
             matches.append(rec)
     mdf = pd.DataFrame(matches)
     if len(mdf):
