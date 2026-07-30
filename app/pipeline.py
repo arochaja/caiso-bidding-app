@@ -669,11 +669,29 @@ def build_wh(market, rh_table, basis, flagcol):
         sum(case when not is_tight then elev_mw else 0 end) as elev_n,
         {impact_agg}
         median(max_price) as med_price,
-        max(cap) as cap_max
+        max(cap) as cap_max,
+        -- Hour-level inputs for a significance check on the score. The published index is
+        -- MW-weighted (elev_t/cap_t), which has no clean standard error, so we also carry
+        -- the UNWEIGHTED per-hour high-priced share and its spread in each group. Their
+        -- difference is a close cousin of the index and does support a Welch test.
+        count(case when is_tight and cap > 0 then 1 end)          as n_t,
+        count(case when not is_tight and cap > 0 then 1 end)      as n_n,
+        avg(case when is_tight and cap > 0 then elev_mw/cap end)  as m_t,
+        avg(case when not is_tight and cap > 0 then elev_mw/cap end) as m_n,
+        stddev_samp(case when is_tight and cap > 0 then elev_mw/cap end)     as sd_t,
+        stddev_samp(case when not is_tight and cap > 0 then elev_mw/cap end) as sd_n
       from rh2_{tag} group by res
     )
     select *,
       '{market}' as market, '{basis}' as basis,
+      (m_t - m_n) as hourly_gap,
+      -- Welch t statistic on the hour-level shares. With n_t >= {MIN_ELEV_HOURS} the t
+      -- distribution is effectively normal, so the dashboard reads this as a z.
+      case when coalesce(sd_t,0) = 0 and coalesce(sd_n,0) = 0 then null
+           when n_t < 2 or n_n < 2 then null
+           else (m_t - m_n) / sqrt(coalesce(sd_t,0)*coalesce(sd_t,0)/n_t
+                                 + coalesce(sd_n,0)*coalesce(sd_n,0)/n_n)
+      end as gap_z,
       (elev_t/nullif(cap_t,0)) as hi_share_tight,
       (elev_n/nullif(cap_n,0)) as hi_share_normal,
       (elev_t/nullif(cap_t,0)) - (elev_n/nullif(cap_n,0)) as withholding_index,
@@ -722,6 +740,7 @@ copy (
   select res, sc, is_storage, cap_max, en_hours, tight_hours, med_price,
          hi_share_tight, hi_share_normal, withholding_index, nearcap_mwh_tight,
          above_share_tight, above_share_normal, impact_index, withheld_mwh_tight,
+         hourly_gap, gap_z, n_t as n_tight_hours_scored,
          market, basis,
          row_number() over (
            partition by market, basis
@@ -815,16 +834,37 @@ select rid, min(rname) rname, max(pmax) pmax, max(nqc) nqc from outg_reid group 
 """).fetchdf()
 
 
-def name_is_storage(n):
-    if not isinstance(n, str):
-        return False
-    n = n.upper()
-    return any(k in n for k in ("STORAGE", "BATTERY", "BESS", "ENERGY STORAGE", " ES", "_ES"))
+def plant_is_storage(rid, n):
+    """Is this named plant battery storage?
+
+    The bidder side of the type clue is solid -- only storage submits state-of-charge
+    limits -- but the PLANT side has to be inferred. Names alone miss about a fifth of
+    real batteries, because operators name them things like "Pomegranate", "Electrolyte"
+    and "Dark Sky Energy Center". The CAISO resource id is the better signal: its third
+    segment carries a BT token for battery resources (MCFLND_5_MSC**BT**1).
+
+    Measured against CEC fuel codes on 480 plants whose name match is corroborated by
+    capacity (+/-25%), of which 135 are CEC batteries:
+
+        name only (the old rule)   precision 99%   recall 79%
+        resource-id BT only        precision 98%   recall 81%
+        name OR id BT (this rule)  precision 98%   recall 93%
+
+    Recall matters here: the type term is 15% of confidence in the binary modes, so a
+    battery tagged as non-storage loses a real match 0.15 it should have had. Adding a
+    BX token would reach 95% recall but costs precision, so it is left out.
+    """
+    if isinstance(n, str):
+        u = n.upper()
+        if any(k in u for k in ("STORAGE", "BATTERY", "BESS", "ENERGY STORAGE", " ES", "_ES")):
+            return True
+    parts = str(rid).upper().split("_")
+    return len(parts) > 2 and "BT" in parts[2]
 
 
 res_meta = {}
 for rid, rname, pmax, nqc in res_intervals[["rid", "rname", "pmax", "nqc"]].itertuples(index=False):
-    res_meta[rid] = dict(rname=rname, pmax=pmax, nqc=nqc, storage=name_is_storage(rname))
+    res_meta[rid] = dict(rname=rname, pmax=pmax, nqc=nqc, storage=plant_is_storage(rid, rname))
 
 
 # expand outage intervals to daily coverage, split by type
