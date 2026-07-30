@@ -3,6 +3,17 @@
   "n_bid_rows": 69278338,
   "n_bid_rows_analyzed": 39352444,
   "n_bid_days": 364,
+  "anonymity": {
+    "cec_plants": 2062,
+    "cec_floor_mw": 1.0,
+    "bidders": 1951,
+    "bidders_covered": 1485,
+    "bidders_below_floor": 466,
+    "median_size_matches": 68,
+    "median_size_tech_matches": 28,
+    "unique_on_size_tech": 0,
+    "thin_on_size_tech": 29
+  },
   "n_bid_hours": 8736,
   "n_resources": 1951,
   "date_min": "2025-01-01",
@@ -205,6 +216,38 @@
         [
           "Days covered",
           "365 of 365"
+        ]
+      ]
+    },
+    {
+      "key": "cec_plants",
+      "name": "California power plants (CEC)",
+      "file": "powerplants.csv",
+      "what": "The California Energy Commission's public list of power plants: name, operator, county, fuel, nameplate capacity and coordinates. It carries NO CAISO resource ID, so it is never joined to a bidder by name. It is used for one thing only: counting how many real plants share a bidder's size and technology, which is the denominator for how identifiable that bidder actually is (Screen 3). No plant name, operator or location from this file is attributed to any bidder.",
+      "stats": [
+        [
+          "Plants (in service, with a capacity)",
+          "2,062"
+        ],
+        [
+          "Plants sharing a typical bidder's size",
+          "68 (median)"
+        ],
+        [
+          "...also sharing its technology",
+          "28 (median)"
+        ],
+        [
+          "Bidders unique on size + technology alone",
+          "0 of 1,485"
+        ],
+        [
+          "Bidders too small for the list to cover",
+          "466 (under 1 MW)"
+        ],
+        [
+          "Used for",
+          "Anonymity context only \u2014 no names joined"
         ]
       ]
     }

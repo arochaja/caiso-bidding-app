@@ -223,6 +223,7 @@ PAGE = st.sidebar.radio(
         "Demand · Who wanted power",
         "Screen 1 · Holding back power",
         "Screen 2 · Unmasking bidders",
+        "Screen 3 · Look up one bidder",
         "How this works & caveats",
     ],
     label_visibility="collapsed",
@@ -1842,6 +1843,592 @@ We score the timing overlap with a standard statistic — the **Matthews correla
         )
 
 # =====================================================================
+# PAGE 3b — BIDDER LOOKUP (profile any resource id + its likeliest plants)
+#   The other screens are population-level: they rank everyone and show the top of the
+#   list. This one answers the opposite question — "tell me everything about THIS id" —
+#   so it must resolve any id in the bid files, including the interties and loads the
+#   withholding screens deliberately exclude.
+# =====================================================================
+elif PAGE == "Screen 3 · Look up one bidder":
+    st.markdown("## Screen 3 · Look up one bidder")
+    st.caption(
+        "Everything the public data says about a single anonymous bidder — who it bids as, "
+        "how much it offers, how it priced that power, and which real named plants it could "
+        "plausibly be. Type any resource ID from the bid files."
+    )
+
+    if not have("bidder_directory.parquet"):
+        st.warning(
+            "Lookup tables not available. Re-run `python pipeline.py` to build "
+            "`bidder_directory.parquet`, `bidder_candidates.parquet` and `plant_catalog.parquet`."
+        )
+        st.stop()
+
+    bdir = load("bidder_directory.parquet")
+    all_ids = sorted(bdir["res"].unique().tolist())
+
+    pick_col, type_col = st.columns([3, 2])
+    with pick_col:
+        sel = st.selectbox(
+            f"Resource ID  ({len(all_ids):,} in the bid data)",
+            all_ids,
+            format_func=lambda r: f"#{int(r)}",
+            help="Every bidder ID present in either bid file — generators, interties and "
+            "loads alike. Start typing to search.",
+        )
+    with type_col:
+        typed = st.text_input(
+            "…or paste an ID",
+            placeholder="e.g. 111621",
+            help="Overrides the picker when it matches a known ID.",
+        )
+    res_id = sel
+    if typed.strip():
+        try:
+            cand_id = int(float(typed.strip()))
+        except ValueError:
+            st.error(f"'{typed}' is not a numeric resource ID.")
+            cand_id = None
+        else:
+            if cand_id in set(all_ids):
+                res_id = cand_id
+            else:
+                st.error(
+                    f"Resource ID **{cand_id}** does not appear in either 2025 bid file. "
+                    "It may belong to a different year, or be a plant that never submitted a bid."
+                )
+
+    rows = bdir[bdir["res"] == res_id]
+    rtm_row = rows[rows["market"] == "RTM"]
+    dam_row = rows[rows["market"] == "DAM"]
+    markets = rows["market"].tolist()
+    rtype = sorted({str(v) for v in rows["resource_type"].dropna()})
+    is_gen = rtype == ["GENERATOR"]
+
+    prof = pd.DataFrame()
+    if have("bidder_profiles.parquet"):
+        _p = load("bidder_profiles.parquet")
+        prof = _p[_p["res"] == res_id]
+    screened = len(prof) > 0
+
+    st.markdown(f"### Bidder #{int(res_id)}")
+    if not is_gen:
+        st.info(
+            f"**This ID bids as {', '.join(t.lower() for t in rtype)}, not a generator.** The "
+            "withholding and unmasking screens cover generators only — an intertie is an "
+            "import/export schedule and a load is demand, so neither can withhold its own "
+            "capacity. The activity profile below still applies; the plant-matching panel does not."
+        )
+    elif not screened:
+        st.info(
+            "**This generator is outside the screened population.** It appears in the bid data "
+            "but never submitted a priced energy offer with positive megawatts, so it has no "
+            "capacity fingerprint to score."
+        )
+
+    # ---------- identity ----------
+    c = st.columns(4)
+    kpi(
+        c[0],
+        "Scheduling coordinator",
+        f"#{int(rows['sc'].dropna().iloc[0]):,}" if rows["sc"].notna().any() else "—",
+        "the market participant that submits on this resource's behalf",
+    )
+    kpi(
+        c[1],
+        "Resource type",
+        " + ".join(t.title() for t in rtype) or "—",
+        "as labelled in the bid file"
+        + (
+            " (bids under more than one type)"
+            if int(rows["n_resource_types"].max() or 1) > 1
+            else ""
+        ),
+    )
+    kpi(
+        c[2],
+        "Bid markets",
+        " + ".join(markets) if markets else "—",
+        "real-time and/or day-ahead",
+    )
+    kpi(
+        c[3],
+        "Peak offered capacity",
+        f"{rows['en_cap_max'].max():,.1f} MW" if rows["en_cap_max"].notna().any() else "—",
+        "largest single-hour energy offer, either market",
+    )
+
+    st.markdown("")
+    c = st.columns(4)
+    _pk = float(prof["cap_ref"].iloc[0]) if screened else float("nan")
+    kpi(
+        c[0],
+        "Working ceiling (P99)",
+        f"{_pk:,.1f} MW" if _pk == _pk else "—",
+        "99th percentile of hourly offered capacity — the size clue used for matching",
+    )
+    kpi(
+        c[1],
+        "Typical offer size",
+        f"{float(prof['cap_avg'].iloc[0]):,.1f} MW" if screened else "—",
+        "mean hourly offered capacity",
+    )
+    kpi(
+        c[2],
+        "Median offer price",
+        f"\\${rows['med_en_price'].dropna().median():,.0f}/MWh"
+        if rows["med_en_price"].notna().any()
+        else "—",
+        "middle of its priced energy steps",
+    )
+    _ss = int(rows["n_selfsched_rows"].sum())
+    kpi(
+        c[3],
+        "Self-schedules",
+        f"{_ss:,} rows" if _ss else "none",
+        f"fixed must-run quantities, peak {rows['selfsched_mw_max'].max():,.0f} MW"
+        if _ss
+        else "never submitted a fixed self-schedule",
+    )
+
+    _days = int(rows["n_days"].max() or 0)
+    _first, _last = rows["first_day"].min(), rows["last_day"].max()
+    st.caption(
+        f"Active on **{_days}** of the {META.get('n_bid_days', 364)} days in the data "
+        f"({_first} → {_last}). Products bid: "
+        f"**{', '.join(sorted({p for v in rows['products'].dropna() for p in str(v).split(',')}))}**."
+        + (
+            f" Hours with a priced energy offer: **{int(prof['active_hours'].iloc[0]):,}**."
+            if screened
+            else ""
+        )
+        + (
+            "  Tagged as **storage** (battery) by its matched plant name."
+            if screened and bool(prof["is_storage"].iloc[0])
+            else ""
+        )
+    )
+
+    # ---------- Screen 1 behaviour, every market x basis ----------
+    st.markdown("---")
+    section(
+        "How it priced its power (Screen 1 scores)",
+        "The withholding score for this bidder under every definition of 'when the grid is "
+        "short'. Blank rows mean it did not clear the minimum short-hour activity to be scored "
+        f"on that basis (at least {META['thresholds']['min_tight_hours']} short hours).",
+    )
+    if have("withholding_resource.parquet"):
+        wr_all = load("withholding_resource.parquet")
+        mine = wr_all[wr_all["res"] == res_id]
+        BASIS_LABEL = {
+            "outage": "Outages (forced)",
+            "price": "Day-ahead price spikes",
+            "price_rtm": "Real-time price spikes",
+        }
+        recs = []
+        for mkt in ("RTM", "DAM"):
+            for b in ("outage", "price", "price_rtm"):
+                r = mine[(mine["market"] == mkt) & (mine["basis"] == b)]
+                if not len(r):
+                    recs.append(
+                        {
+                            "Market": mkt,
+                            "'Short' defined by": BASIS_LABEL[b],
+                            "Scored": "no",
+                            "Rank": None,
+                            "Withholding score": None,
+                            "High-priced share, short": None,
+                            "High-priced share, normal": None,
+                            "Short hours": None,
+                        }
+                    )
+                    continue
+                r = r.iloc[0]
+                recs.append(
+                    {
+                        "Market": mkt,
+                        "'Short' defined by": BASIS_LABEL[b],
+                        "Scored": "yes",
+                        "Rank": int(r["rank"]) if r["withholding_index"] > 0 else None,
+                        "Withholding score": round(float(r["withholding_index"]), 3),
+                        "High-priced share, short": round(float(r["hi_share_tight"] or 0) * 100, 1),
+                        "High-priced share, normal": round(
+                            float(r["hi_share_normal"] or 0) * 100, 1
+                        ),
+                        "Short hours": int(r["tight_hours"]),
+                    }
+                )
+        st.dataframe(pd.DataFrame(recs), width="stretch", hide_index=True)
+        _best = mine[mine["withholding_index"] > 0]
+        if len(_best):
+            _b = _best.sort_values("withholding_index", ascending=False).iloc[0]
+            st.caption(
+                f"Its strongest signal is on the **{BASIS_LABEL[_b['basis']]}** basis in the "
+                f"**{_b['market']}** market: it priced "
+                f"**{float(_b['hi_share_tight']) * 100:.0f}%** of offered capacity at or above "
+                f"\\${META['thresholds']['elevated_price']:.0f}/MWh in short hours versus "
+                f"**{float(_b['hi_share_normal']) * 100:.0f}%** in normal hours. A positive gap is "
+                "a lead, not proof — and a small plant's offers may not move the market at all."
+            )
+        else:
+            st.caption(
+                "No positive withholding score on any basis: this bidder did not shift capacity "
+                "toward high prices when the grid was short."
+            )
+    else:
+        st.caption("Withholding results not available.")
+
+    # ---------- how identifiable is it, really? ----------
+    if is_gen and have("bidder_anonymity.parquet"):
+        _an = load("bidder_anonymity.parquet")
+        _an = _an[_an["res"] == res_id]
+        if len(_an):
+            _a = _an.iloc[0]
+            _tech_label = {
+                "storage": "battery storage",
+                "solar": "solar",
+                "other": "not solar or storage",
+            }[_a["tech"]]
+            _tech_why = {
+                "storage": "its bids carry state-of-charge limits, which only storage submits",
+                "solar": "it essentially never offers overnight and clusters in daylight hours",
+                "other": "it offers around the clock and carries no state-of-charge limits",
+            }[_a["tech"]]
+            st.markdown("---")
+            section(
+                "How identifiable is this bidder, really?",
+                "Before trusting any single candidate, it is worth knowing how many real "
+                "California plants this bidder could be judging only by what the bid data "
+                "reveals — its size, and the technology implied by how it bids.",
+            )
+            c = st.columns(3)
+            kpi(
+                c[0],
+                "Technology (from bidding alone)",
+                _tech_label.title(),
+                _tech_why,
+            )
+            kpi(
+                c[1],
+                "Real plants of this size",
+                f"{int(_a['n_plants_size']):,}",
+                f"in-service California plants within ±{META['thresholds']['cap_tolerance_pct']:.0f}%"
+                f" of {float(_a['cap_ref']):,.1f} MW",
+            )
+            kpi(
+                c[2],
+                "…of this size AND technology",
+                f"{int(_a['n_plants_size_tech']):,}",
+                f"out of {int(_a['n_plants_tech_total']):,} such plants statewide",
+                tone="good" if int(_a["n_plants_size_tech"]) > 5 else "critical",
+            )
+            _k = int(_a["n_plants_size_tech"])
+            _floor = float(META.get("anonymity", {}).get("cec_floor_mw", 1.0))
+            _n_cands = 0
+            if have("bidder_candidates.parquet"):
+                _bcx = load("bidder_candidates.parquet")
+                _n_cands = int((_bcx["res"] == res_id).sum())
+            if bool(_a.get("below_cec_floor", False)):
+                st.info(
+                    f"**This comparison can't say anything for a bidder this small.** At "
+                    f"{float(_a['cap_ref']):,.2f} MW it sits below the CEC list's coverage "
+                    f"(only a handful of listed plants are under {_floor:g} MW), so a low count "
+                    "here reflects what the list contains, not how distinctive this bidder is. "
+                    "Resources this small are usually aggregations of units rather than a single "
+                    "listed plant."
+                )
+            elif _k == 0:
+                st.info(
+                    f"**No in-service listed plant is {_tech_label} at roughly "
+                    f"{float(_a['cap_ref']):,.1f} MW.** That most likely means this bidder is not a "
+                    "single CEC-listed plant at all — an aggregation of units, an out-of-state "
+                    "resource delivering into CAISO, or a plant the list has under a different "
+                    "capacity. Size gives no purchase here either way."
+                )
+            elif _k == 1:
+                st.error(
+                    f"**Size alone nearly identifies this bidder.** Exactly one in-service "
+                    f"California plant is {_tech_label} at roughly {float(_a['cap_ref']):,.1f} MW. "
+                    "A bidder this distinctive is exposed by its capacity before any timing "
+                    "analysis is applied — which is itself a finding about the anonymization, and "
+                    "a rare one: it does not happen to any other bidder the list covers."
+                )
+            elif _k <= 5:
+                st.warning(
+                    f"**Only {_k} real plants share this size and technology**, so capacity alone "
+                    "already narrows this bidder to a handful. The anonymization is thin here."
+                )
+            else:
+                st.info(
+                    f"**Capacity alone cannot identify this bidder** — {_k} real California plants "
+                    f"are {_tech_label} at roughly this size. Any narrowing below that comes from "
+                    "the outage-timing evidence, not from size"
+                    + (
+                        f", which is what takes it to the {_n_cands} candidate(s) below."
+                        if _n_cands
+                        else "."
+                    )
+                )
+            _ac = META.get("anonymity", {})
+            st.caption(
+                "Counts come from the California Energy Commission's public plant list "
+                f"({int(_ac.get('cec_plants', 0)):,} in-service plants). That list carries no "
+                "CAISO resource ID, so it is **never** joined to a bidder by name — only counted, "
+                "which is why no plant name, operator or location from it appears anywhere here. "
+                f"Across the {int(_ac.get('bidders_covered', 0)):,} bidders it covers (at or above "
+                f"{float(_ac.get('cec_floor_mw', 1.0)):g} MW), a typical one shares its size and "
+                f"technology with **{int(_ac.get('median_size_tech_matches', 0))}** real plants and "
+                f"only **{int(_ac.get('unique_on_size_tech', 0))}** are unique on that basis. "
+                "**Capacity and technology essentially never identify a bidder on their own** — "
+                "the outage-timing evidence does that work. A further "
+                f"{int(_ac.get('bidders_below_floor', 0)):,} bidders are too small for the list to "
+                "cover at all."
+            )
+
+    # ---------- activity over time ----------
+    st.markdown("---")
+    section(
+        "What it offered, day by day",
+        "Offered capacity in each market. Gaps are days with no priced offer — which may mean "
+        "an outage, or simply that it ran on a fixed self-schedule instead.",
+    )
+
+    def _daily(fname):
+        if not have(fname):
+            return pd.DataFrame(columns=["day", "cap"])
+        d = load(fname)
+        d = d[d["res"] == res_id][["day", "cap"]].copy()
+        d["day"] = pd.to_datetime(d["day"])
+        return d.sort_values("day")
+
+    d_rtm, d_dam = _daily("bidder_daily_cap.parquet"), _daily("bidder_daily_cap_dam.parquet")
+    if len(d_rtm) or len(d_dam):
+        _all_days = pd.concat([d_rtm["day"], d_dam["day"]])
+        cal = pd.date_range(_all_days.min(), _all_days.max(), freq="D")
+        fig = go.Figure()
+        for d, lbl, col in ((d_rtm, "Real-time (RTM)", BLUE), (d_dam, "Day-ahead (DAM)", AQUA)):
+            if not len(d):
+                continue
+            ser = d.set_index("day").reindex(cal)["cap"]
+            fig.add_trace(
+                go.Scatter(
+                    x=cal,
+                    y=ser.values,
+                    mode="lines",
+                    name=lbl,
+                    line=dict(color=col, width=1.6),
+                    connectgaps=False,
+                    hovertemplate=f"{lbl}<br>%{{x|%b %d}}: %{{y:,.1f}} MW offered<extra></extra>",
+                )
+            )
+        style(fig, height=300, ytitle="MW offered (daily peak)")
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.caption("No priced daily offer series for this bidder.")
+
+    # ---------- top 5 candidate plants ----------
+    st.markdown("---")
+    section(
+        "Top 5 plants this bidder could be",
+        "Ranked by the same evidence Screen 2 uses — capacity size, went-quiet timing against "
+        "the plant's outage calendar, curtailment-size tracking, and battery-vs-not type — but "
+        "here we always show the best five, even when the evidence is weak.",
+    )
+
+    if not is_gen:
+        st.info("Plant matching applies to generators only. Nothing to match for this ID.")
+    elif not have("bidder_candidates.parquet"):
+        st.caption("Candidate table not available. Re-run `python pipeline.py`.")
+    else:
+        bc = load("bidder_candidates.parquet")
+        mine_c = bc[bc["res"] == res_id].sort_values("rank").head(5)
+        if not len(mine_c):
+            st.warning(
+                "**No candidate plants.** No named plant in the outage data has a capacity "
+                f"within ±{META['thresholds']['cap_tolerance_pct']:.0f}% of this bidder's "
+                "working ceiling, so there is nothing to rank. A bidder can be un-matchable "
+                "simply because no plant of its size ever reported an outage in 2025."
+            )
+        else:
+            _fp = bool(mine_c["fingerprintable"].iloc[0])
+            _any_admitted = bool(mine_c["admitted"].any())
+            if not _fp:
+                st.warning(
+                    "**This bidder has no usable went-quiet pattern**, so timing evidence (φ) "
+                    "carries no weight here. The ranking below rests mostly on capacity size, "
+                    "which many plants can share — treat it as a shortlist to check, not an "
+                    "identification."
+                )
+            elif not _any_admitted:
+                st.warning(
+                    "**None of these candidates clears Screen 2's admission test** (φ ≥ 0.30 on "
+                    "at least 3 overlapping days, or ρ ≥ 0.35). They are the closest available "
+                    "matches, not confident ones."
+                )
+            tbl = pd.DataFrame(
+                {
+                    "#": mine_c["rank"].astype(int),
+                    "Plant": mine_c["cand_name"],
+                    "PMAX (MW)": mine_c["cand_pmax"].round(1),
+                    "Size gap": mine_c["cap_diff_pct"].map(lambda v: f"{v:.1f}%"),
+                    "Timing φ": mine_c["phi"].round(3),
+                    "Quiet+outage days": mine_c["overlap_days"].astype(int),
+                    "Curtailment ρ": mine_c["rho"].map(
+                        lambda v: "—" if pd.isna(v) else f"{float(v):.2f}"
+                    ),
+                    "Type match": mine_c["type_match"].map({True: "yes", False: "no"}),
+                    "Confidence": mine_c["confidence"].map(lambda v: f"{float(v) * 100:.0f}%"),
+                    "Day-ahead ✓": mine_c["dam_corroborates"].map({True: "yes", False: "no"}),
+                    "Clears Screen 2 gate": mine_c["admitted"].map({True: "yes", False: "no"}),
+                }
+            )
+            st.dataframe(tbl, width="stretch", hide_index=True)
+            st.caption(
+                "**Size gap** = how far the plant's PMAX is from this bidder's P99 offered "
+                "capacity. **φ** compares the bidder's quiet days with the plant's outage days "
+                "(−1 to 1; 0 = chance). **ρ** correlates the depth of the plant's curtailment "
+                "with how far the bidder scaled back. **Confidence** blends "
+                "0.35·φ + 0.30·ρ + 0.25·size + 0.10·type — so a candidate can score ~30% on "
+                "capacity alone with no timing evidence whatsoever."
+            )
+
+            # per-candidate evidence overlay
+            top = mine_c.iloc[0]
+            csel = st.selectbox(
+                "Show the evidence for…",
+                mine_c["cand_rid"].tolist(),
+                format_func=lambda r: (
+                    f"#{int(mine_c[mine_c.cand_rid == r]['rank'].iloc[0])}  "
+                    f"{mine_c[mine_c.cand_rid == r]['cand_name'].iloc[0]}"
+                ),
+            )
+            crow = mine_c[mine_c["cand_rid"] == csel].iloc[0]
+            if have("resource_outage_daily.parquet") and len(d_rtm):
+                rod = load("resource_outage_daily.parquet")
+                od = rod[rod["rid"] == csel].copy()
+                DAY_MS = 86400000  # one day wide, so each bar covers exactly its own day
+                cal = pd.date_range(d_rtm["day"].min(), d_rtm["day"].max(), freq="D")
+                yv = d_rtm.set_index("day").reindex(cal)["cap"]
+                _ymax = float(yv.max()) if yv.notna().any() else 1.0
+                y0, y1 = 0.0, (_ymax * 1.08 if _ymax > 0 else 1.0)
+                fig = go.Figure()
+
+                # Outage days are drawn as full-height BARS rather than shapes: a plotly shape
+                # (add_vrect) cannot emit hover events, so the band details would be invisible.
+                def _bands(kind, color, label):
+                    b = od[od["kind"] == kind]
+                    if not len(b):
+                        return
+                    pmax = b["pmax"].where(b["pmax"] > 0)
+                    pct = (b["curt_mw"] / pmax * 100).fillna(-1)
+                    cust = [
+                        [mw if mw == mw else -1, p, pm if pm == pm else -1]
+                        for mw, p, pm in zip(b["curt_mw"], pct, b["pmax"])
+                    ]
+                    fig.add_trace(
+                        go.Bar(
+                            x=b["day"],
+                            y=[y1 - y0] * len(b),
+                            base=y0,
+                            width=DAY_MS,
+                            marker=dict(color=color, line=dict(width=0)),
+                            name=f"{crow['cand_name']} — {label} outage",
+                            customdata=cust,
+                            hovertemplate=(
+                                "<b>%{x|%a %d %b %Y}</b><br>"
+                                f"{crow['cand_name']}<br>"
+                                f"{label.title()} outage<br>"
+                                "Curtailed: %{customdata[0]:,.0f} MW"
+                                " (%{customdata[1]:.0f}% of PMAX)<br>"
+                                "Plant PMAX: %{customdata[2]:,.0f} MW<extra></extra>"
+                            ),
+                        )
+                    )
+
+                if len(od):
+                    od["day"] = pd.to_datetime(od["day"])
+                    _bands("forced", "rgba(208,59,59,0.22)", "forced")
+                    _bands("planned", "rgba(237,161,0,0.26)", "planned")
+                fig.add_trace(
+                    go.Scatter(
+                        x=cal,
+                        y=yv.values,
+                        mode="lines",
+                        name="Bidder's offered MW",
+                        line=dict(color=BLUE, width=1.6),
+                        connectgaps=False,
+                        hovertemplate="%{x|%b %d}: %{y:,.1f} MW offered<extra></extra>",
+                    )
+                )
+                fig.update_yaxes(range=[y0, y1])
+                fig.update_layout(bargap=0, hovermode="closest")
+                style(fig, height=300, ytitle="MW offered (daily peak)")
+                st.plotly_chart(fig, use_container_width=True)
+                st.caption(
+                    f"🟥 Red = **{crow['cand_name']}** on a forced outage · 🟧 Amber = planned. "
+                    "**Hover any band** for that day's curtailed megawatts and what share of the "
+                    "plant's capacity that was. "
+                    f"Of this bidder's **{int(crow['dip_days'])}** quiet days, "
+                    f"**{int(crow['overlap_days'])}** fall on one of that plant's outage days "
+                    f"(φ = {float(crow['phi']):.3f})."
+                    + (
+                        ""
+                        if len(od)
+                        else "  No daily outage detail is stored for this plant, so no bands are drawn."
+                    )
+                )
+            _pc = load("plant_catalog.parquet") if have("plant_catalog.parquet") else pd.DataFrame()
+            if len(_pc):
+                pc = _pc[_pc["rid"] == csel]
+                if len(pc):
+                    pc = pc.iloc[0]
+                    st.caption(
+                        f"**{pc['rname']}** — PMAX {float(pc['pmax']):,.1f} MW, net qualifying "
+                        f"capacity {float(pc['nqc']):,.1f} MW, "
+                        f"{int(pc['forced_days'])} forced and {int(pc['planned_days'])} planned "
+                        f"outage days in 2025"
+                        + (", tagged as storage." if bool(pc["is_storage"]) else ".")
+                    )
+
+            # does this bidder appear in the published match sets?
+            pub = []
+            for _n, _lbl in (
+                ("forced", "forced outages"),
+                ("combined", "forced + planned"),
+                ("magnitude", "magnitude-aware"),
+            ):
+                _f = f"reident_matches_{_n}.parquet"
+                if not have(_f):
+                    continue
+                _m = load(_f)
+                _mm = _m[(_m["res"] == res_id) & (_m["rank"] == 1)]
+                if len(_mm) and float(_mm["confidence"].iloc[0]) >= 0.60:
+                    pub.append(
+                        f"**{_lbl}** → {_mm['cand_name'].iloc[0]} "
+                        f"({float(_mm['confidence'].iloc[0]) * 100:.0f}%)"
+                    )
+            if pub:
+                st.success(
+                    "This bidder is **confidently unmasked** on Screen 2 by: " + "; ".join(pub)
+                )
+            else:
+                st.caption(
+                    "This bidder is **not** among Screen 2's confident unmaskings under any "
+                    "method, so nothing above should be read as an identification."
+                )
+
+        st.download_button(
+            "⬇ Download this bidder's candidates (CSV)",
+            (
+                load("bidder_candidates.parquet")
+                .pipe(lambda d: d[d["res"] == res_id])
+                .to_csv(index=False)
+            ),
+            f"caiso_bidder_{int(res_id)}_candidates.csv",
+            "text/csv",
+        )
+
+# =====================================================================
 # PAGE 4 — METHOD & ASSUMPTIONS
 # =====================================================================
 else:
@@ -1854,9 +2441,12 @@ else:
     # ---------- the data behind the tool ----------
     section(
         "The data behind this tool",
-        f"Everything here is built from {len(META.get('datasets', []))} public CAISO datasets for "
-        "the 2025 delivery year — no private or outside data is used. Each plant is anonymized to an "
-        "ID number in the bid data.",
+        f"Everything here is built from {len(META.get('datasets', []))} public datasets for the "
+        "2025 delivery year — no private or confidential data is used. All the market data comes "
+        "from CAISO; the one outside source is the California Energy Commission's public plant "
+        "list, used only to count how many real plants share a bidder's size and technology (see "
+        "its card below — no names from it are attached to any bidder). Each plant is anonymized "
+        "to an ID number in the bid data.",
     )
     ds = META.get("datasets", [])
     for i in range(0, len(ds), 2):
