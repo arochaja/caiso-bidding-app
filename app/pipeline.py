@@ -1428,34 +1428,6 @@ copy (
 """)
 
 
-# 5e-bis. QUIET SPELLS — the exact went-quiet stretches the fingerprint scored, per market.
-#   The evidence chart marks where a bidder stopped and resumed offering. Those marks must
-#   come from HERE and not be recomputed in the dashboard: the dip rule counts a
-#   self-scheduled day as PRESENT, while the daily series the chart draws carries priced
-#   offers only. Deriving them in the UI would contradict the phi and dip-day counts shown
-#   beside the chart.
-def _quiet_spells(dips_by_res, market):
-    rows = []
-    for res_, days in dips_by_res.items():
-        if not days:
-            continue
-        ds = sorted(days)
-        start = prev = ds[0]
-        for d in ds[1:]:
-            if (d - prev).days > 1:  # gap -> the previous spell ended at `prev`
-                rows.append((res_, market, start, prev, (prev - start).days + 1))
-                start = d
-            prev = d
-        rows.append((res_, market, start, prev, (prev - start).days + 1))
-    return rows
-
-
-_spells = _quiet_spells(bidder_dip_days, "RTM") + _quiet_spells(bidder_dip_days_dam, "DAM")
-pd.DataFrame(_spells, columns=["res", "market", "start_day", "end_day", "n_days"]).sort_values(
-    ["res", "market", "start_day"]
-).to_parquet(f"{OUT}/bidder_quiet_spells.parquet", index=False)
-log(f"  quiet spells: {len(_spells):,} across both markets")
-
 # 5f. ANONYMITY CONTEXT from the CEC power-plant list (optional raw input).
 #   How many REAL California plants could a bidder be, judging only by things visible in
 #   the bid data — its size, and the technology implied by how it bids? That count is the
