@@ -2306,17 +2306,30 @@ elif PAGE == "Screen 3 · Look up one bidder":
             if have("resource_outage_daily.parquet") and len(d_rtm):
                 rod = load("resource_outage_daily.parquet")
                 od = rod[rod["rid"] == csel].copy()
+                if len(od):
+                    od["day"] = pd.to_datetime(od["day"])
                 DAY_MS = 86400000  # one day wide, so each bar covers exactly its own day
-                cal = pd.date_range(d_rtm["day"].min(), d_rtm["day"].max(), freq="D")
-                yv = d_rtm.set_index("day").reindex(cal)["cap"]
-                _ymax = float(yv.max()) if yv.notna().any() else 1.0
-                y0, y1 = 0.0, (_ymax * 1.08 if _ymax > 0 else 1.0)
-                fig = go.Figure()
+                _lo = min([d["day"].min() for d in (d_rtm, d_dam) if len(d)])
+                _hi = max([d["day"].max() for d in (d_rtm, d_dam) if len(d)])
+                cal = pd.date_range(_lo, _hi, freq="D")
+                _has_dam = len(d_dam) > 0
+                dam_title = (
+                    "Day-ahead market (DAM) — the same test on a separate bid stream"
+                    if _has_dam
+                    else "Day-ahead market (DAM) — this bidder submits no day-ahead priced offers"
+                )
+                fig = make_subplots(
+                    rows=2,
+                    cols=1,
+                    shared_xaxes=True,
+                    vertical_spacing=0.12,
+                    subplot_titles=("Real-time market (RTM)", dam_title),
+                )
 
                 # Outage days are drawn as full-height BARS rather than shapes: a plotly shape
                 # (add_vrect) cannot emit hover events, so the band details would be invisible.
-                def _bands(kind, color, label):
-                    b = od[od["kind"] == kind]
+                def _bands(row, kind, color, label, y0, y1, show_legend):
+                    b = od[od["kind"] == kind] if len(od) else od
                     if not len(b):
                         return
                     pmax = b["pmax"].where(b["pmax"] > 0)
@@ -2333,6 +2346,8 @@ elif PAGE == "Screen 3 · Look up one bidder":
                             width=DAY_MS,
                             marker=dict(color=color, line=dict(width=0)),
                             name=f"{crow['cand_name']} — {label} outage",
+                            legendgroup=label,
+                            showlegend=show_legend,
                             customdata=cust,
                             hovertemplate=(
                                 "<b>%{x|%a %d %b %Y}</b><br>"
@@ -2342,35 +2357,95 @@ elif PAGE == "Screen 3 · Look up one bidder":
                                 " (%{customdata[1]:.0f}% of PMAX)<br>"
                                 "Plant PMAX: %{customdata[2]:,.0f} MW<extra></extra>"
                             ),
-                        )
+                        ),
+                        row=row,
+                        col=1,
                     )
 
-                if len(od):
-                    od["day"] = pd.to_datetime(od["day"])
-                    _bands("forced", "rgba(208,59,59,0.22)", "forced")
-                    _bands("planned", "rgba(237,161,0,0.26)", "planned")
-                fig.add_trace(
-                    go.Scatter(
-                        x=cal,
-                        y=yv.values,
-                        mode="lines",
-                        name="Bidder's offered MW",
-                        line=dict(color=BLUE, width=1.6),
-                        connectgaps=False,
-                        hovertemplate="%{x|%b %d}: %{y:,.1f} MW offered<extra></extra>",
-                    )
-                )
-                fig.update_yaxes(range=[y0, y1])
+                def _market_row(row, d, label, colr, show_legend):
+                    yv = d.set_index("day").reindex(cal)["cap"] if len(d) else None
+                    _ymax = float(yv.max()) if yv is not None and yv.notna().any() else 1.0
+                    y0, y1 = 0.0, (_ymax * 1.08 if _ymax > 0 else 1.0)
+                    _bands(row, "forced", "rgba(208,59,59,0.22)", "forced", y0, y1, show_legend)
+                    _bands(row, "planned", "rgba(237,161,0,0.26)", "planned", y0, y1, show_legend)
+                    if yv is not None:
+                        fig.add_trace(
+                            go.Scatter(
+                                x=cal,
+                                y=yv.values,
+                                mode="lines",
+                                name=f"Offered MW — {label}",
+                                line=dict(color=colr, width=1.6),
+                                connectgaps=False,
+                                showlegend=show_legend,
+                                hovertemplate=f"{label}<br>%{{x|%b %d}}: %{{y:,.1f}} MW offered"
+                                "<extra></extra>",
+                            ),
+                            row=row,
+                            col=1,
+                        )
+                    fig.update_yaxes(range=[y0, y1], row=row, col=1)
+
+                _market_row(1, d_rtm, "real-time", BLUE, True)
+                _market_row(2, d_dam, "day-ahead", AQUA, False)
                 fig.update_layout(bargap=0, hovermode="closest")
-                style(fig, height=300, ytitle="MW offered (daily peak)")
+                style(fig, height=460, ytitle=None)
+                fig.update_yaxes(title_text="MW offered", row=1, col=1)
+                fig.update_yaxes(title_text="MW offered", row=2, col=1)
                 st.plotly_chart(fig, use_container_width=True)
+
+                # --- the day-ahead timing test, stated symmetrically with the real-time one
+                _phid = crow.get("phi_dam")
+                _ovd = int(crow.get("overlap_days_dam") or 0)
+                _dipd = int(crow.get("dip_days_dam") or 0)
+                tc = st.columns(3)
+                kpi(
+                    tc[0],
+                    "Timing match — real-time",
+                    f"φ = {float(crow['phi']):.3f}",
+                    f"{int(crow['overlap_days'])} of {int(crow['dip_days'])} quiet days fall on "
+                    "this plant's outage days",
+                )
+                if _phid is None or pd.isna(_phid):
+                    kpi(
+                        tc[1],
+                        "Timing match — day-ahead",
+                        "not testable",
+                        "no usable day-ahead quiet pattern"
+                        + (
+                            " (this bidder submits no day-ahead priced offers)"
+                            if not _has_dam
+                            else " — too few quiet days, or too short a day-ahead span"
+                        ),
+                    )
+                else:
+                    kpi(
+                        tc[1],
+                        "Timing match — day-ahead",
+                        f"φ = {float(_phid):.3f}",
+                        f"{_ovd} of {_dipd} day-ahead quiet days fall on the same outage days",
+                        tone="good" if float(_phid) >= 0.30 else None,
+                    )
+                _corr = bool(crow.get("dam_corroborates"))
+                kpi(
+                    tc[2],
+                    "Cross-check verdict",
+                    "corroborated" if _corr else ("—" if _phid is None or pd.isna(_phid) else "no"),
+                    "the day-ahead stream reproduces the pattern (φ ≥ 0.30 on ≥ 3 days)"
+                    if _corr
+                    else "the day-ahead stream does not reproduce the pattern at the threshold",
+                    tone="good" if _corr else None,
+                )
                 st.caption(
-                    f"🟥 Red = **{crow['cand_name']}** on a forced outage · 🟧 Amber = planned. "
-                    "**Hover any band** for that day's curtailed megawatts and what share of the "
-                    "plant's capacity that was. "
-                    f"Of this bidder's **{int(crow['dip_days'])}** quiet days, "
-                    f"**{int(crow['overlap_days'])}** fall on one of that plant's outage days "
-                    f"(φ = {float(crow['phi']):.3f})."
+                    f"🟥 Red = **{crow['cand_name']}** on a forced outage · 🟧 Amber = planned; the "
+                    "same outage days are shaded on both panels. **Hover any band** for that day's "
+                    "curtailed megawatts and what share of the plant's capacity that was. The two "
+                    "markets are **separate bid streams**, so a drop that lines up with the outages "
+                    "in both is stronger evidence than one market alone — but both tests compare "
+                    "against the same plant outage calendar, so this is corroboration, not "
+                    "independent confirmation. A blank or flat day-ahead panel is common and is not "
+                    "evidence against a match: about half of all bidders submit no usable day-ahead "
+                    "pattern at all."
                     + (
                         ""
                         if len(od)
