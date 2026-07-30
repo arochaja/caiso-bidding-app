@@ -127,6 +127,22 @@ if not have("meta.json"):
 
 META = load_meta()
 
+
+def meta_num(key, *fallback_keys, default=0):
+    """Read a numeric meta field, tolerating a meta.json older than this code.
+
+    Deployments can briefly serve new code against a previously-checked-out meta.json,
+    and anyone who pulls without re-running pipeline.py is in the same position. A
+    hard META['new_key'] in the sidebar takes the WHOLE app down before a single page
+    renders, so every field this file added must degrade instead of raising.
+    """
+    for k in (key, *fallback_keys):
+        v = META.get(k)
+        if isinstance(v, (int, float)):
+            return v
+    return default
+
+
 # per-hub colors for the price screen (consistent across charts)
 HUB_COLOR = {"SP15": "#2a78d6", "NP15": "#1baf7a", "ZP26": "#eda100", "SYS": "#0b0b0b"}
 HUB_LABEL = {
@@ -220,7 +236,9 @@ st.sidebar.caption(
     "how easily the **anonymity can be undone**."
 )
 st.sidebar.markdown("---")
-st.sidebar.metric("Price steps analyzed", f"{META['n_bid_rows_analyzed'] / 1e6:.1f} million")
+st.sidebar.metric(
+    "Price steps analyzed", f"{meta_num('n_bid_rows_analyzed', 'n_bid_rows') / 1e6:.1f} million"
+)
 st.sidebar.metric("Anonymous bidders", f"{META['n_resources']:,}")
 st.sidebar.caption(
     f"Period: {META.get('n_bid_days', 364)} days of {META['date_min'][:4]}  "
@@ -255,7 +273,7 @@ if PAGE == "Overview":
     kpi(
         c[0],
         "Price steps analyzed",
-        f"{META['n_bid_rows_analyzed'] / 1e6:.1f} M",
+        f"{meta_num('n_bid_rows_analyzed', 'n_bid_rows') / 1e6:.1f} M",
         "individual (megawatt, price) steps inside hourly energy offers, 364 days",
     )
     kpi(
@@ -1886,8 +1904,8 @@ else:
 | | |
 |---|---|
 | Source | {META["generated_scope"]} |
-| Price steps in the source file | {META["n_bid_rows"]:,} |
-| Price steps used by the screens | {META.get("n_bid_rows_analyzed", 0):,} |
+| Price steps in the source file | {meta_num("n_bid_rows"):,} |
+| Price steps used by the screens | {meta_num("n_bid_rows_analyzed", "n_bid_rows"):,} |
 | Bidders analyzed (generators with positive-MW energy offers) | {META["n_resources"]:,} |
 | Dates | {META["date_min"]} → {META["date_max"]} |
 | Bid markets | {" + ".join(META.get("markets", ["RTM"]))} (real-time + day-ahead) |
