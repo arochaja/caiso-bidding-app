@@ -182,8 +182,13 @@ con.execute("create or replace table hours as select distinct h from rh order by
 #   * one curtailment is re-filed under many MRIDs — SunZia Wind North/South alone arrive
 #     in late Oct 2025 with ~70 MRIDs each (~8-9% of MW in Nov/Dec).
 # Together those inflated December by 18% and put 24% of "system-tight" hours in the set
-# for the wrong reason. Per-resource max fixes both at once. Validated against CAISO's own
-# trade-date snapshot for 2025-12-17: 26,901 MW here vs 26,903 MW in CAISO's report.
+# for the wrong reason. Per-resource max fixes both at once. The AGGREGATION RULE was
+# cross-checked against CAISO's own 2025-12-17 trade-date snapshot, at that snapshot's day
+# grain: forced-only, per-resource max sums to 23,319 MW here vs 23,321 MW in CAISO's report
+# (forced+planned: 26,901 vs 26,903; naive segment sum of the same rows: 160,255 forced /
+# 169,713 forced+planned). Note that check is a DAY-grain, snapshot-scoped comparison — the
+# `tight` series below is forced-only and HOURLY, and runs 16,223-18,103 MW on that date, so
+# the two are not the same quantity. What transfers is the grain, not the number.
 con.execute("""
 create or replace table tight as
 select hh.h as h,
