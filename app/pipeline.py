@@ -879,23 +879,46 @@ _ss_added = merge_selfsched(present_cap, "ss_day")
 log(f"  real-time days reclassified absent -> self-scheduled: {_ss_added:,}")
 bref = {res: float(np.median(list(caps.values()))) for res, caps in present_cap.items()}
 
+# Days on which the market as a whole has NO bids are data gaps, not behaviour: nobody
+# can go quiet on a day the file does not cover. 2025-03-09 is absent from both bid files,
+# and leaving it in made it a dip day for 80% of real-time bidders — half the quiet days of
+# a typical bidder, feeding straight into phi. Days like that are excluded from both the
+# dip sets and the span length N.
+market_days = {
+    "RTM": {
+        pd.Timestamp(d).date() for d in con.execute("select distinct day from rh").fetchdf()["day"]
+    },
+    "DAM": {
+        pd.Timestamp(d).date()
+        for d in con.execute("select distinct day from rh_dam").fetchdf()["day"]
+    },
+}
+
+
+def _span_days_in_market(first_day, last_day, mkt):
+    """Calendar days in [first, last] that the market actually has data for."""
+    return [
+        d.date()
+        for d in pd.date_range(pd.Timestamp(first_day), pd.Timestamp(last_day), freq="D")
+        if d.date() in market_days[mkt]
+    ]
+
+
 bidder_dip_days = defaultdict(set)
 for b in bidder.itertuples(index=False):
     ref = bref.get(b.res, 0)
     if not ref or ref <= 0:
         continue
-    span = pd.date_range(pd.Timestamp(b.first_day), pd.Timestamp(b.last_day), freq="D")
     caps = present_cap.get(b.res, {})
     dips = set()
-    for d in span:
-        dd = d.date()
+    for dd in _span_days_in_market(b.first_day, b.last_day, "RTM"):
         c = caps.get(dd)
         if c is None or c < 0.35 * ref:  # absent, or genuine collapse vs typical day
             dips.add(dd)
     bidder_dip_days[b.res] = dips
 
 span_len = {
-    b.res: (pd.Timestamp(b.last_day) - pd.Timestamp(b.first_day)).days + 1
+    b.res: len(_span_days_in_market(b.first_day, b.last_day, "RTM"))
     for b in bidder.itertuples(index=False)
 }
 span_first = {b.res: pd.Timestamp(b.first_day).date() for b in bidder.itertuples(index=False)}
@@ -921,7 +944,7 @@ dam_span = {
     r.res: (
         pd.Timestamp(r.first_day).date(),
         pd.Timestamp(r.last_day).date(),
-        (pd.Timestamp(r.last_day) - pd.Timestamp(r.first_day)).days + 1,
+        len(_span_days_in_market(r.first_day, r.last_day, "DAM")),
     )
     for r in bidder_dam.itertuples(index=False)
 }
@@ -931,8 +954,7 @@ for res, (d0, d1, _N) in dam_span.items():
     if not ref or ref <= 0:
         continue
     caps = present_cap_dam.get(res, {})
-    for d in pd.date_range(pd.Timestamp(d0), pd.Timestamp(d1), freq="D"):
-        dd = d.date()
+    for dd in _span_days_in_market(d0, d1, "DAM"):  # skip market-wide data gaps
         c = caps.get(dd)
         if c is None or c < 0.35 * ref:
             bidder_dip_days_dam[res].add(dd)
@@ -1404,6 +1426,35 @@ copy (
   order by res, market, month
 ) to '{OUT}/bidder_monthly.parquet' (format parquet)
 """)
+
+
+# 5e-bis. QUIET SPELLS — the exact went-quiet stretches the fingerprint scored, per market.
+#   The evidence chart marks where a bidder stopped and resumed offering. Those marks must
+#   come from HERE and not be recomputed in the dashboard: the dip rule counts a
+#   self-scheduled day as PRESENT, while the daily series the chart draws carries priced
+#   offers only. Deriving them in the UI would contradict the phi and dip-day counts shown
+#   beside the chart.
+def _quiet_spells(dips_by_res, market):
+    rows = []
+    for res_, days in dips_by_res.items():
+        if not days:
+            continue
+        ds = sorted(days)
+        start = prev = ds[0]
+        for d in ds[1:]:
+            if (d - prev).days > 1:  # gap -> the previous spell ended at `prev`
+                rows.append((res_, market, start, prev, (prev - start).days + 1))
+                start = d
+            prev = d
+        rows.append((res_, market, start, prev, (prev - start).days + 1))
+    return rows
+
+
+_spells = _quiet_spells(bidder_dip_days, "RTM") + _quiet_spells(bidder_dip_days_dam, "DAM")
+pd.DataFrame(_spells, columns=["res", "market", "start_day", "end_day", "n_days"]).sort_values(
+    ["res", "market", "start_day"]
+).to_parquet(f"{OUT}/bidder_quiet_spells.parquet", index=False)
+log(f"  quiet spells: {len(_spells):,} across both markets")
 
 # 5f. ANONYMITY CONTEXT from the CEC power-plant list (optional raw input).
 #   How many REAL California plants could a bidder be, judging only by things visible in

@@ -2362,7 +2362,74 @@ elif PAGE == "Screen 3 · Look up one bidder":
                         col=1,
                     )
 
-                def _market_row(row, d, label, colr, show_legend):
+                # The went-quiet stretches the fingerprint actually scored, published by the
+                # pipeline. Not recomputed here: the dip rule counts a self-scheduled day as
+                # present, while `d_rtm`/`d_dam` carry priced offers only, so a locally
+                # derived version would disagree with the phi and dip-day counts on screen.
+                spells_all = (
+                    load("bidder_quiet_spells.parquet")
+                    if have("bidder_quiet_spells.parquet")
+                    else pd.DataFrame(columns=["res", "market", "start_day", "end_day", "n_days"])
+                )
+                spells_all = spells_all[spells_all["res"] == res_id]
+                _oset = set(pd.to_datetime(od["day"]).dt.date) if len(od) else set()
+
+                def _quiet_markers(row, mkt, y0, y1, show_legend):
+                    sp = spells_all[spells_all["market"] == mkt]
+                    if not len(sp):
+                        return 0
+                    yq = y0 + 0.04 * (y1 - y0)
+                    starts, ends, cust_s, cust_e = [], [], [], []
+                    for r_ in sp.itertuples(index=False):
+                        s0 = pd.Timestamp(r_.start_day)
+                        s1 = pd.Timestamp(r_.end_day)
+                        n = int(r_.n_days)
+                        # how much of this quiet stretch coincides with the selected plant
+                        ov = sum(1 for dd in pd.date_range(s0, s1, freq="D") if dd.date() in _oset)
+                        info = [s0.strftime("%d %b"), s1.strftime("%d %b"), n, ov]
+                        starts.append(s0)
+                        cust_s.append(info)
+                        ends.append(s1 + pd.Timedelta(days=1))
+                        cust_e.append(info)
+                    ht = (
+                        "<b>Quiet %{customdata[0]} – %{customdata[1]}</b><br>"
+                        "%{customdata[2]} day(s) with no offer<br>"
+                        "%{customdata[3]} of them are outage days for "
+                        f"{crow['cand_name']}<extra></extra>"
+                    )
+                    fig.add_trace(
+                        go.Scatter(
+                            x=starts,
+                            y=[yq] * len(starts),
+                            mode="markers",
+                            marker=dict(symbol="triangle-down", size=9, color=INK),
+                            name="Went quiet",
+                            legendgroup="quiet",
+                            showlegend=show_legend,
+                            customdata=cust_s,
+                            hovertemplate=ht,
+                        ),
+                        row=row,
+                        col=1,
+                    )
+                    fig.add_trace(
+                        go.Scatter(
+                            x=ends,
+                            y=[yq] * len(ends),
+                            mode="markers",
+                            marker=dict(symbol="triangle-up", size=9, color=INK, opacity=0.55),
+                            name="Resumed offering",
+                            legendgroup="resumed",
+                            showlegend=show_legend,
+                            customdata=cust_e,
+                            hovertemplate=ht,
+                        ),
+                        row=row,
+                        col=1,
+                    )
+                    return len(sp)
+
+                def _market_row(row, d, label, colr, show_legend, mkt):
                     yv = d.set_index("day").reindex(cal)["cap"] if len(d) else None
                     _ymax = float(yv.max()) if yv is not None and yv.notna().any() else 1.0
                     y0, y1 = 0.0, (_ymax * 1.08 if _ymax > 0 else 1.0)
@@ -2385,9 +2452,10 @@ elif PAGE == "Screen 3 · Look up one bidder":
                             col=1,
                         )
                     fig.update_yaxes(range=[y0, y1], row=row, col=1)
+                    return _quiet_markers(row, mkt, y0, y1, show_legend)
 
-                _market_row(1, d_rtm, "real-time", BLUE, True)
-                _market_row(2, d_dam, "day-ahead", AQUA, False)
+                n_spell_rtm = _market_row(1, d_rtm, "real-time", BLUE, True, "RTM")
+                _market_row(2, d_dam, "day-ahead", AQUA, False, "DAM")
                 fig.update_layout(bargap=0, hovermode="closest")
                 style(fig, height=460, ytitle=None)
                 fig.update_yaxes(title_text="MW offered", row=1, col=1)
@@ -2438,8 +2506,11 @@ elif PAGE == "Screen 3 · Look up one bidder":
                 )
                 st.caption(
                     f"🟥 Red = **{crow['cand_name']}** on a forced outage · 🟧 Amber = planned; the "
-                    "same outage days are shaded on both panels. **Hover any band** for that day's "
-                    "curtailed megawatts and what share of the plant's capacity that was. The two "
+                    "same outage days are shaded on both panels. ▼ marks where the bidder stopped "
+                    "offering and ▲ where it resumed — these are the exact went-quiet stretches the "
+                    f"φ score is built on ({int(n_spell_rtm or 0)} of them in real time). **Hover "
+                    "any band or marker** for the curtailed megawatts, or for how much of a quiet "
+                    "stretch coincides with this plant's outages. The two "
                     "markets are **separate bid streams**, so a drop that lines up with the outages "
                     "in both is stronger evidence than one market alone — but both tests compare "
                     "against the same plant outage calendar, so this is corroboration, not "
