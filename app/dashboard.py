@@ -2369,22 +2369,34 @@ elif PAGE == "Screen 3 · Look up one bidder":
                     _bands(row, "forced", "rgba(208,59,59,0.22)", "forced", y0, y1, show_legend)
                     _bands(row, "planned", "rgba(237,161,0,0.26)", "planned", y0, y1, show_legend)
                     if yv is not None:
+                        # Same rendering as Screen 2: one dot per day the bidder submitted a
+                        # priced offer, so a break in the series reads as absent dots rather
+                        # than an interpolated line. Gaps are the went-quiet stretches.
                         fig.add_trace(
                             go.Scatter(
                                 x=cal,
                                 y=yv.values,
-                                mode="lines",
+                                mode="lines+markers",
                                 name=f"Offered MW — {label}",
-                                line=dict(color=colr, width=1.6),
+                                line=dict(color=colr, width=1.3),
+                                marker=dict(size=4, color=colr, line=dict(width=0)),
                                 connectgaps=False,
                                 showlegend=show_legend,
-                                hovertemplate=f"{label}<br>%{{x|%b %d}}: %{{y:,.1f}} MW offered"
-                                "<extra></extra>",
+                                hovertemplate=f"{label}<br>%{{x|%b %d}}: %{{y:,.1f}} MW "
+                                "(day's peak offer)<extra></extra>",
                             ),
                             row=row,
                             col=1,
                         )
+                        if yv.notna().any():
+                            fig.add_hline(
+                                y=float(yv.median()),
+                                line=dict(color=MUTED, width=1, dash="dot"),
+                                row=row,
+                                col=1,
+                            )
                     fig.update_yaxes(range=[y0, y1], row=row, col=1)
+                    return 0
 
                 _market_row(1, d_rtm, "real-time", BLUE, True)
                 _market_row(2, d_dam, "day-ahead", AQUA, False)
@@ -2438,8 +2450,12 @@ elif PAGE == "Screen 3 · Look up one bidder":
                 )
                 st.caption(
                     f"🟥 Red = **{crow['cand_name']}** on a forced outage · 🟧 Amber = planned; the "
-                    "same outage days are shaded on both panels. **Hover any band** for that day's "
-                    "curtailed megawatts and what share of the plant's capacity that was. The two "
+                    "same outage days are shaded on both panels. Each dot is a day the bidder "
+                    "submitted priced offers (its peak that day); **gaps are days with no priced "
+                    "offer** — the went-quiet stretches the φ score is built on, though the bidder "
+                    "may still have been running on a self-schedule. The dotted line is the "
+                    "bidder's median day. **Hover any band** for that day's curtailed megawatts "
+                    "and what share of the plant's capacity that was. The two "
                     "markets are **separate bid streams**, so a drop that lines up with the outages "
                     "in both is stronger evidence than one market alone — but both tests compare "
                     "against the same plant outage calendar, so this is corroboration, not "
