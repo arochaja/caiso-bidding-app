@@ -2306,12 +2306,53 @@ elif PAGE == "Screen 3 · Look up one bidder":
             if have("resource_outage_daily.parquet") and len(d_rtm):
                 rod = load("resource_outage_daily.parquet")
                 od = rod[rod["rid"] == csel].copy()
-                fig = go.Figure()
+                DAY_MS = 86400000  # one day wide, so each bar covers exactly its own day
                 cal = pd.date_range(d_rtm["day"].min(), d_rtm["day"].max(), freq="D")
+                yv = d_rtm.set_index("day").reindex(cal)["cap"]
+                _ymax = float(yv.max()) if yv.notna().any() else 1.0
+                y0, y1 = 0.0, (_ymax * 1.08 if _ymax > 0 else 1.0)
+                fig = go.Figure()
+
+                # Outage days are drawn as full-height BARS rather than shapes: a plotly shape
+                # (add_vrect) cannot emit hover events, so the band details would be invisible.
+                def _bands(kind, color, label):
+                    b = od[od["kind"] == kind]
+                    if not len(b):
+                        return
+                    pmax = b["pmax"].where(b["pmax"] > 0)
+                    pct = (b["curt_mw"] / pmax * 100).fillna(-1)
+                    cust = [
+                        [mw if mw == mw else -1, p, pm if pm == pm else -1]
+                        for mw, p, pm in zip(b["curt_mw"], pct, b["pmax"])
+                    ]
+                    fig.add_trace(
+                        go.Bar(
+                            x=b["day"],
+                            y=[y1 - y0] * len(b),
+                            base=y0,
+                            width=DAY_MS,
+                            marker=dict(color=color, line=dict(width=0)),
+                            name=f"{crow['cand_name']} — {label} outage",
+                            customdata=cust,
+                            hovertemplate=(
+                                "<b>%{x|%a %d %b %Y}</b><br>"
+                                f"{crow['cand_name']}<br>"
+                                f"{label.title()} outage<br>"
+                                "Curtailed: %{customdata[0]:,.0f} MW"
+                                " (%{customdata[1]:.0f}% of PMAX)<br>"
+                                "Plant PMAX: %{customdata[2]:,.0f} MW<extra></extra>"
+                            ),
+                        )
+                    )
+
+                if len(od):
+                    od["day"] = pd.to_datetime(od["day"])
+                    _bands("forced", "rgba(208,59,59,0.22)", "forced")
+                    _bands("planned", "rgba(237,161,0,0.26)", "planned")
                 fig.add_trace(
                     go.Scatter(
                         x=cal,
-                        y=d_rtm.set_index("day").reindex(cal)["cap"].values,
+                        y=yv.values,
                         mode="lines",
                         name="Bidder's offered MW",
                         line=dict(color=BLUE, width=1.6),
@@ -2319,22 +2360,14 @@ elif PAGE == "Screen 3 · Look up one bidder":
                         hovertemplate="%{x|%b %d}: %{y:,.1f} MW offered<extra></extra>",
                     )
                 )
-                if len(od):
-                    od["day"] = pd.to_datetime(od["day"])
-                    for kind, colr in (("forced", STATUS["critical"]), ("planned", ORANGE)):
-                        for day in od[od["kind"] == kind]["day"]:
-                            fig.add_vrect(
-                                x0=day,
-                                x1=day + pd.Timedelta(days=1),
-                                fillcolor=colr,
-                                opacity=0.16,
-                                line_width=0,
-                                layer="below",
-                            )
+                fig.update_yaxes(range=[y0, y1])
+                fig.update_layout(bargap=0, hovermode="closest")
                 style(fig, height=300, ytitle="MW offered (daily peak)")
                 st.plotly_chart(fig, use_container_width=True)
                 st.caption(
                     f"🟥 Red = **{crow['cand_name']}** on a forced outage · 🟧 Amber = planned. "
+                    "**Hover any band** for that day's curtailed megawatts and what share of the "
+                    "plant's capacity that was. "
                     f"Of this bidder's **{int(crow['dip_days'])}** quiet days, "
                     f"**{int(crow['overlap_days'])}** fall on one of that plant's outage days "
                     f"(φ = {float(crow['phi']):.3f})."
