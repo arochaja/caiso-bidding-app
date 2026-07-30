@@ -206,6 +206,116 @@ def kpi(col, label, value, help=None, tone=None):
     )
 
 
+# ---------- data dictionaries for the CSV exports ----------
+# Every download ships raw column names. An auditor opening one of these files has no way
+# to know that `econ_mw` is the quantity at the cheapest point of a demand curve, or that
+# `bidder_cap` is a P99 rather than a maximum. Each export renders its definitions on
+# screen and offers them as a companion CSV.
+DATA_DICT = {
+    "prices": [
+        ("market", "DAM = day-ahead, RTM = real-time (5-minute prices averaged to the hour)."),
+        ("h", "Hour beginning, Pacific time. 2025-03-09 is absent from the day-ahead source."),
+        ("hub", "Trading hub: SP15, NP15, ZP26, or SYS = the mean across the three."),
+        ("lmp", "Locational marginal price, $/MWh."),
+        ("energy", "Energy component of the LMP, $/MWh."),
+        ("congestion", "Congestion component, $/MWh."),
+        ("loss", "Marginal-loss component, $/MWh."),
+    ],
+    "demand": [
+        ("market", "DAM or RTM. The real-time file carries no self-schedule field."),
+        ("day", "Trade date."),
+        ("demand_peak_mw", "Highest hourly system demand bid that day (self-schedule + curve)."),
+        ("demand_avg_mw", "Mean across that day's hours."),
+        (
+            "econ_peak_mw / econ_avg_mw",
+            "The price-curve portion only. About 95% of these "
+            "megawatts are bid at or above $1,000/MWh, so they rarely flex in practice.",
+        ),
+        ("self_peak_mw / self_avg_mw", "The fixed self-scheduled (must-take) portion."),
+    ],
+    "withholding": [
+        ("res", "Anonymous bidder ID (RESOURCEBID_SEQ). Not a CAISO resource name."),
+        ("sc", "Scheduling coordinator ID. Lowest ID where a resource bids under several."),
+        ("market / basis", "Which bid market, and which definition of 'grid is short'."),
+        ("en_hours", "Hours with a priced energy offer."),
+        ("tight_hours", "Of those, hours flagged short on this basis."),
+        (
+            "hi_share_tight / hi_share_normal",
+            "Share of offered MW priced at or above the "
+            "high-price cutoff, in short vs normal hours. MW-weighted.",
+        ),
+        ("withholding_index", "hi_share_tight minus hi_share_normal. The headline score."),
+        ("hourly_gap", "The same comparison computed per hour and averaged, unweighted."),
+        (
+            "gap_z",
+            "Welch statistic for hourly_gap. Hours are serially correlated, so treat "
+            "it as a rough guide to whether a gap exceeds the plant's own variability, not as "
+            "a strict p-value.",
+        ),
+        (
+            "above_share_tight / above_share_normal / impact_index",
+            "Day-ahead only: the same "
+            "comparison measured against the price that actually cleared each hour.",
+        ),
+        (
+            "withheld_mwh_tight",
+            "Day-ahead only: MWh offered above the clearing price in short hours.",
+        ),
+        ("nearcap_mwh_tight", "MWh offered within reach of the price cap during short hours."),
+        ("rank", "Rank within this market and basis. Many plants tie at a score of 0."),
+    ],
+    "reident": [
+        ("res", "Anonymous bidder ID."),
+        ("cand_rid / cand_name", "The candidate real plant. A LEAD, not an identification."),
+        ("bidder_cap", "The bidder's 99th-percentile hourly offered MW, not its maximum."),
+        ("cand_pmax", "The plant's PMAX from the outage file, per resource (often a unit)."),
+        ("cap_diff_pct", "Size gap as a share of PMAX. Admitted matches are within 12%."),
+        ("dip_days", "Days the bidder went quiet: no priced offer and no self-schedule."),
+        ("overlap_days", "Of those, days the plant was on an outage."),
+        ("phi", "Matthews correlation of the two calendars, -1 to 1. 0 = chance."),
+        ("recall / jaccard", "Other overlap measures on the same two day-sets."),
+        (
+            "rho",
+            "Magnitude method only: rank correlation of curtailment depth against the "
+            "bidder's offer reduction.",
+        ),
+        (
+            "confidence",
+            "0.60*phi + 0.25*size + 0.15*type (binary modes). Negative phi counts as 0.",
+        ),
+        (
+            "phi_dam / overlap_days_dam / dam_corroborates",
+            "The same timing test on the "
+            "day-ahead offers. Blank where the bidder has no usable day-ahead pattern.",
+        ),
+        ("rank", "Rank of this candidate for this bidder."),
+    ],
+}
+
+
+def dict_csv(key):
+    return pd.DataFrame(DATA_DICT[key], columns=["column", "definition"]).to_csv(index=False)
+
+
+def show_data_dict(key, label):
+    """Render an export's column definitions and offer them as a companion CSV.
+
+    Rendered inline rather than in an expander: three of the five downloads already sit
+    inside one, and nesting expanders is unsupported.
+    """
+    st.caption(f"**What's in the {label} download**")
+    st.caption(
+        " · ".join(f"**{col}** {desc}" for col, desc in DATA_DICT[key]),
+    )
+    st.download_button(
+        "⬇ Column definitions (CSV)",
+        dict_csv(key),
+        f"caiso_{key}_column_definitions.csv",
+        "text/csv",
+        key=f"dd_{key}_{label}".replace(" ", "_"),
+    )
+
+
 def section(title, subtitle=None):
     st.markdown(f"### {title}")
     if subtitle:
@@ -768,6 +878,7 @@ There are two prices for every hour. The **day-ahead (DAM)** price is set the af
             "caiso_hub_lmp.csv",
             "text/csv",
         )
+        show_data_dict("prices", "hourly prices")
 
 # =====================================================================
 # PAGE — DEMAND SIDE (who wanted power, vs how thin supply was)
@@ -979,6 +1090,7 @@ cannot be computed for this market. Read the day-ahead view for the demand mix.
             f"caiso_demand_daily_{market.lower()}_2025.csv",
             "text/csv",
         )
+        show_data_dict("demand", "daily demand")
 
 # =====================================================================
 # PAGE 2 — ECONOMIC WITHHOLDING
@@ -1088,6 +1200,22 @@ elif PAGE == "Screen 1 · Holding back power":
                 "season*, so a plant that simply offers higher in Q4 can score positive. "
                 "Cross-check any outage-basis lead against the two price bases.\n"
             )
+            if market == "DAM":
+                # Day-ahead bids are locked ~14h before delivery, but this basis marks an hour
+                # short using the outages ACTIVE AT DELIVERY. Roughly half that capacity had
+                # not gone offline yet when the bids were submitted.
+                _season_caveat += (
+                    "- **Caveat on timing (day-ahead × outages).** Day-ahead bids are locked in "
+                    "at 10:00 the day before delivery, but an hour is marked short using the "
+                    "outages running *at delivery*. Only about **53%** of that capacity had "
+                    "already gone offline when the bids were submitted, and re-deriving the "
+                    "cutoff from just the outages knowable by then flags a **different 63%** of "
+                    "hours. Read this combination as *offers that turned out to coincide with "
+                    "scarcity*, not as evidence the plant foresaw it — the bid file carries no "
+                    "submission timestamp, so no screen here can condition on what a bidder "
+                    "actually knew. The real-time market has no such gap, and the "
+                    "clearing-price panel below is the better-founded day-ahead test.\n"
+                )
         # median energy offer price for the market on screen, read from the dataset cards
         _ds_key = "dam_bids" if market == "DAM" else "rtm_bids"
         _med_offer = next(
@@ -1109,7 +1237,7 @@ The idea: a plant gaming the market will price its power very high **especially 
 - For each plant we measure the share of its offered power priced steeply high — **≥ \\${t["elevated_price"]:.0f} per megawatt-hour** — separately during short hours and normal hours. (For context, the median energy *offer* price in this market is about \\${_med_offer}/MWh.)
 - **Withholding score = (high-priced share when short) − (high-priced share when normal).** A big positive number means the plant moves more of its capacity to prices unlikely to clear precisely when the grid is short. Whether that could actually move the market price also depends on the plant's size and pivotality, which this screen does not test — some flagged plants are very small.
 - *Worked example:* a plant prices **20%** of its power steeply high in normal hours but **60%** when the grid is short → score = 0.60 − 0.20 = **0.40**. A plant that behaves the same either way scores near 0.
-- We only score plants active in at least {t["min_tight_hours"]} short hours, so a single unusual hour cannot drive the score ({n_scored:,} plants qualify on this basis). There is no statistical significance test — treat a high score on few hours with care.
+- We only score plants active in at least {t["min_tight_hours"]} short hours, so a single unusual hour cannot drive the score ({n_scored:,} plants qualify on this basis). Each plant also gets a **signal-vs-noise** figure (shown in its drill-down) comparing the gap against its own hour-to-hour variability — a high score built on erratic hours scores low there.
 - **Important:** this flags *suspicious behavior*, not proven wrongdoing — a lead, not a verdict. The "short" definitions are complementary, and {_multi_basis} plants in this market are flagged under more than one — those are the strongest leads.
 {_season_caveat}""")
 
@@ -1311,6 +1439,33 @@ The idea: a plant gaming the market will price its power very high **especially 
     kpi(k[2], "High-priced share, short hours", f"{row['hi_share_tight'] * 100:.0f}%")
     kpi(k[3], "High-priced share, normal hours", f"{row['hi_share_normal'] * 100:.0f}%")
 
+    # Does the gap exceed this plant's own hour-to-hour variability, or is it noise?
+    _z = row.get("gap_z")
+    if _z is not None and not pd.isna(_z):
+        _z = float(_z)
+        _verdict = (
+            "far larger than this plant's own hour-to-hour variability"
+            if abs(_z) >= 3
+            else "larger than this plant's own hour-to-hour variability"
+            if abs(_z) >= 2
+            else "**within** this plant's normal hour-to-hour variability, so it could easily be "
+            "noise rather than a pattern"
+        )
+        st.caption(
+            f"**Signal vs noise.** Comparing the same shares hour by hour rather than MW-weighted, "
+            f"the gap is {float(row.get('hourly_gap', 0)) * 100:+.1f} points with a Welch statistic "
+            f"of **z = {_z:.1f}** over {int(row.get('n_tight_hours_scored') or 0):,} short hours — "
+            f"{_verdict}. Treat this as a rough guide, not a p-value: a plant's hours are serially "
+            "correlated (a quiet week is one event, not 168 independent ones), which makes any "
+            "such statistic look more confident than it should."
+        )
+    else:
+        st.caption(
+            "**Signal vs noise.** No significance figure for this plant: its high-priced share "
+            "never varies across hours (typically because it is always 0), so there is nothing "
+            "to test."
+        )
+
     # Reindex onto every day in the plant's span so absent days render as GAPS. Plotly would
     # otherwise draw a straight line across months the plant never bid in.
     _dcal = (
@@ -1386,6 +1541,7 @@ The idea: a plant gaming the market will price its power very high **especially 
             "text/csv",
             key=f"wh_dl_{market}_{basis}",
         )
+        show_data_dict("withholding", "withholding results")
 
 # =====================================================================
 # PAGE 3 — RE-IDENTIFICATION
@@ -1841,6 +1997,7 @@ We score the timing overlap with a standard statistic — the **Matthews correla
             f"caiso_reidentification_2025_{_tag}.csv",
             "text/csv",
         )
+        show_data_dict("reident", "candidate matches")
 
 # =====================================================================
 # PAGE 3b — BIDDER LOOKUP (profile any resource id + its likeliest plants)
@@ -1866,12 +2023,20 @@ elif PAGE == "Screen 3 · Look up one bidder":
 
     bdir = load("bidder_directory.parquet")
     all_ids = sorted(bdir["res"].unique().tolist())
+    # Land on a generator that actually has candidates. The lowest ID in the file is an
+    # intertie, so the default view was "the screens do not cover this ID" — a poor
+    # introduction to a panel whose point is the plant matching.
+    _default_ix = 0
+    if have("bidder_candidates.parquet"):
+        _with_c = set(load("bidder_candidates.parquet")["res"].unique())
+        _default_ix = next((i for i, r in enumerate(all_ids) if r in _with_c), 0)
 
     pick_col, type_col = st.columns([3, 2])
     with pick_col:
         sel = st.selectbox(
             f"Resource ID  ({len(all_ids):,} in the bid data)",
             all_ids,
+            index=_default_ix,
             format_func=lambda r: f"#{int(r)}",
             help="Every bidder ID present in either bid file — generators, interties and "
             "loads alike. Start typing to search.",
@@ -2040,6 +2205,7 @@ elif PAGE == "Screen 3 · Look up one bidder":
                             "High-priced share, short": None,
                             "High-priced share, normal": None,
                             "Short hours": None,
+                            "Signal vs noise (z)": None,
                         }
                     )
                     continue
@@ -2056,6 +2222,9 @@ elif PAGE == "Screen 3 · Look up one bidder":
                             float(r["hi_share_normal"] or 0) * 100, 1
                         ),
                         "Short hours": int(r["tight_hours"]),
+                        "Signal vs noise (z)": (
+                            None if pd.isna(r.get("gap_z")) else round(float(r["gap_z"]), 1)
+                        ),
                     }
                 )
         st.dataframe(pd.DataFrame(recs), width="stretch", hide_index=True)
@@ -2518,6 +2687,7 @@ elif PAGE == "Screen 3 · Look up one bidder":
             f"caiso_bidder_{int(res_id)}_candidates.csv",
             "text/csv",
         )
+        show_data_dict("reident", "candidate list")
 
 # =====================================================================
 # PAGE 4 — METHOD & ASSUMPTIONS
