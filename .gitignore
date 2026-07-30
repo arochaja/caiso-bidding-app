@@ -1,6 +1,8 @@
 # --- data (not tracked; supplied locally) ---
 # keep the caiso-data/ folder + its README placeholder, ignore the actual data files
 caiso-data/*.parquet
+# real-time LMP: ~50GB of nested parquets (monthly files + a "december parts/" folder)
+caiso-data/2025-RTM-LMP/
 # NOTE: app/data/derived/ IS committed so the deployed app has its data.
 # (It's small, pre-aggregated output — the large raw caiso-data/ stays ignored.)
 app/.cache/

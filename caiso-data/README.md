@@ -11,10 +11,18 @@ caiso-data/
 ├── 2025-RTM-BIDS.parquet           # CAISO Real-Time Market bids (~352 MB)
 ├── 2025-DAM-BIDS.parquet           # CAISO Day-Ahead Market bids (~130 MB)
 ├── 2025-DAM-LMP-full.parquet       # CAISO Day-Ahead LMP, full year (~3 GB)
+├── 2025-RTM-LMP/                   # CAISO Real-Time LMP, 5-minute (~50 GB, node-level)
+│   ├── RTM_2025-01.parquet … RTM_2025-11.parquet   # one parquet per month (Jan–Nov)
+│   └── december parts/*.parquet                     # December split as per-hour parquets
 └── OUTAGES_2025-01-01_2025-12-31/  # 365 daily "prior trade date" outage XLSX reports
 ```
 
 These names are referenced directly in `../app/pipeline.py` and `../app/build_outages_v2.py`.
+The pipeline never loads the RTM-LMP files whole — they hold every grid node (~18k), but
+every query filters to the three trading-hub nodes first, so only a few seconds per file
+are spent. Both the monthly files and the `december parts/` folder are read together
+(matched by glob), so adding more months/days needs no code change as long as the schema
+(`INTERVALSTARTTIME_GMT, NODE_ID, LMP_TYPE, VALUE, …`) and naming pattern hold.
 
 ## Outages: how the parquet is built
 
