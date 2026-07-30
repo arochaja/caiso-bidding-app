@@ -1,7 +1,10 @@
 {
-  "generated_scope": "CAISO RTM 2025 (full year)",
+  "generated_scope": "CAISO RTM 2025 (364 of 365 days; 2025-03-09 absent from both bid files and the day-ahead price file. The 5-minute real-time price file does cover it.)",
   "n_bid_rows": 69278338,
-  "n_resources": 2445,
+  "n_bid_rows_analyzed": 39352444,
+  "n_bid_days": 364,
+  "n_bid_hours": 8736,
+  "n_resources": 1951,
   "date_min": "2025-01-01",
   "date_max": "2025-12-31",
   "datasets": [
@@ -16,24 +19,32 @@
           "69,278,338"
         ],
         [
-          "Distinct anonymous bidders",
+          "Distinct anonymous bidders in the file",
           "4,245"
         ],
         [
-          "\u2026that submit energy offers",
+          "\u2026with at least one energy offer",
           "4,245"
         ],
         [
-          "Resource types (energy bidders)",
-          "generator 2,510, intertie 1,735, load 9"
+          "\u2026generators with a positive-MW energy offer (the population screened)",
+          "1,951"
+        ],
+        [
+          "Resource types (any energy offer)",
+          "generator 2,510, intertie 1,735, load 9 (sums above 4,245: some IDs bid under more than one type)"
         ],
         [
           "Typical energy offer price (median)",
-          "$32/MWh"
+          "$35/MWh"
         ],
         [
           "Date coverage",
           "2025-01-01 \u2192 2025-12-31"
+        ],
+        [
+          "Days covered",
+          "364 of 365 (2025-03-09 absent from the source file)"
         ]
       ]
     },
@@ -48,24 +59,32 @@
           "17,682,904"
         ],
         [
-          "Distinct anonymous bidders",
+          "Distinct anonymous bidders in the file",
           "3,181"
         ],
         [
-          "\u2026that submit energy offers",
+          "\u2026with at least one energy offer",
           "3,172"
         ],
         [
-          "Resource types (energy bidders)",
-          "generator 1,960, intertie 1,086, load 129"
+          "\u2026generators with a positive-MW energy offer (the population screened)",
+          "1,551"
+        ],
+        [
+          "Resource types (any energy offer)",
+          "generator 1,960, intertie 1,086, load 129 (sums above 3,172: some IDs bid under more than one type)"
         ],
         [
           "Typical energy offer price (median)",
-          "$26/MWh"
+          "$40/MWh"
         ],
         [
           "Date coverage",
           "2025-01-01 \u2192 2025-12-31"
+        ],
+        [
+          "Days covered",
+          "364 of 365 (2025-03-09 absent from the source file)"
         ]
       ]
     },
@@ -104,8 +123,12 @@
       "what": "The actual price of electricity, set separately at every point on the grid (a 'Locational Marginal Price'). We track the three regional trading hubs plus their average. This is the real market-price data \u2014 powering the Prices screen and the price-based / clearing-price parts of Screen 1.",
       "stats": [
         [
-          "Price observations",
+          "Rows (LMP plus its 3 components)",
           "590,182,504"
+        ],
+        [
+          "Node-hour prices",
+          "147,545,626"
         ],
         [
           "Distinct pricing locations (nodes)",
@@ -130,6 +153,10 @@
         [
           "Date coverage",
           "2025-01-01 \u2192 2025-12-31"
+        ],
+        [
+          "Days covered",
+          "364 of 365 (2025-03-09 absent from the source file)"
         ]
       ]
     },
@@ -152,12 +179,20 @@
           "$37/MWh"
         ],
         [
-          "Average / peak system price",
-          "$33 / $540/MWh"
+          "Average system price",
+          "$33/MWh"
+        ],
+        [
+          "Peak hourly average",
+          "$540/MWh"
+        ],
+        [
+          "Peak 5-minute system price",
+          "$1,057/MWh"
         ],
         [
           "DAM\u2192RTM spread (mean \u00b1 sd)",
-          "$-0.9 \u00b1 $28.2/MWh"
+          "$-0.9 \u00b1 $13.6/MWh"
         ],
         [
           "Negative-price hours",
@@ -165,7 +200,11 @@
         ],
         [
           "Date coverage",
-          "2025-01-01 08:00:00 \u2192 2026-01-01 07:55:00"
+          "2025-01-01 00:00:00 \u2192 2025-12-31 23:55:00"
+        ],
+        [
+          "Days covered",
+          "365 of 365"
         ]
       ]
     }
@@ -177,20 +216,20 @@
     "tight_mw": 14742.2,
     "price_tight_percentile": 0.9,
     "price_tight_lmp": 54.4,
-    "price_tight_lmp_rtm": 53.8,
+    "price_tight_lmp_rtm": 53.9,
     "cap_tolerance_pct": 12.0,
     "min_tight_hours": 200
   },
-  "withholding_scored": 1277,
-  "withholding_scored_outage": 1277,
-  "withholding_scored_price": 1325,
+  "withholding_scored": 1261,
+  "withholding_scored_outage": 1261,
+  "withholding_scored_price": 1311,
   "withholding_scored_by": {
-    "RTM_outage": 1277,
-    "RTM_price": 1325,
-    "RTM_price_rtm": 1296,
+    "RTM_outage": 1261,
+    "RTM_price": 1311,
+    "RTM_price_rtm": 1294,
     "DAM_outage": 579,
     "DAM_price": 548,
-    "DAM_price_rtm": 531
+    "DAM_price_rtm": 533
   },
   "markets": [
     "RTM",
@@ -207,34 +246,34 @@
     "peak_sys_lmp": 107.43,
     "neg_price_hours": 590,
     "price_hours": 8736,
-    "rtm_avg_sys_lmp": 33.38,
+    "rtm_avg_sys_lmp": 33.39,
     "rtm_median_sys_lmp": 36.88,
     "rtm_peak_sys_lmp": 539.91,
     "rtm_neg_price_hours": 628,
     "rtm_price_hours": 8757,
     "spread_mean": -0.92,
-    "spread_sd": 28.22,
-    "spread_max": 534.5,
-    "spread_min": -120.1,
-    "spread_hours": 8726
+    "spread_sd": 13.57,
+    "spread_max": 540.2,
+    "spread_min": -58.6,
+    "spread_hours": 8734
   },
   "demand": {
-    "dam_avg_mw": 9733.0,
-    "dam_peak_mw": 53415.0,
-    "dam_musttake_share_pct": 11.9
+    "dam_avg_mw": 29173.0,
+    "dam_peak_mw": 58026.0,
+    "dam_musttake_share_pct": 70.6
   },
-  "reident_candidate_bidders": 321,
-  "reident_candidate_bidders_combined": 349,
-  "reident_candidate_bidders_magnitude": 482,
-  "reident_highconf_links": 234,
-  "reident_highconf_links_combined": 260,
-  "reident_highconf_links_magnitude": 199,
-  "reident_dam_corroborated": 75,
-  "reident_dam_corroborated_combined": 93,
-  "reident_dam_corroborated_magnitude": 71,
+  "reident_candidate_bidders": 283,
+  "reident_candidate_bidders_combined": 308,
+  "reident_candidate_bidders_magnitude": 436,
+  "reident_highconf_links": 203,
+  "reident_highconf_links_combined": 226,
+  "reident_highconf_links_magnitude": 191,
+  "reident_dam_corroborated": 76,
+  "reident_dam_corroborated_combined": 87,
+  "reident_dam_corroborated_magnitude": 69,
   "assumptions": [
     "Screen 1 runs on two bid markets you can toggle: real-time (RTM, the default) and day-ahead (DAM). Because the price data is day-ahead, the DAM market lets Screen 1 compare offers against the ACTUAL day-ahead clearing price \u2014 a real impact test \u2014 while RTM keeps the original design.",
-    "Screen 1 can define 'how short the grid was' three ways: by outages (how much plant capacity was offline \u2014 the original stand-in), by day-ahead prices (hours when the DAM market price spiked), or by real-time prices (hours when the 5-minute RTM price spiked, which catches intra-hour scarcity the hourly day-ahead price flattens). Both price bases use the top 10% of hours at the three CAISO trading hubs; the outage basis needs no price data at all.",
+    "Screen 1 can define 'how short the grid was' three ways: by outages (how much plant capacity was offline \u2014 the original stand-in), by day-ahead prices (hours when the DAM market price spiked), or by real-time prices (hours whose AVERAGE 5-minute real-time price was in the top 10%). Because that is an hourly average, a single 5-minute spike inside an otherwise cheap hour does not by itself mark the hour scarce. Both price bases use the top 10% of hours at the three CAISO trading hubs; the outage basis needs no price data at all.",
     "The real clearing-price impact test (DAM market) measures the capacity a GENERATOR offered ABOVE the price that actually cleared that hour \u2014 capacity it effectively withheld from the day-ahead solution \u2014 comparing scarce vs. normal hours. It covers generators only (day-ahead demand and intertie bids are excluded, since a load bidding above the price is willingness-to-pay, not withheld supply) and is measured at the system/hub price level because bids carry no node identifier.",
     "There's no fuel-cost data, so 'holding back power' is still judged by comparing each plant to its own behavior in short vs. normal hours \u2014 the clearing price sharpens the 'high offer' threshold but does not prove intent.",
     "Outages come from CAISO's daily 'prior trade date' reports. A row with no end time means the outage was still ongoing as of that report's trade date, so we treat it as active through that date \u2014 not a one-hour blip. Outages that began before 2025 but were still active are clipped into the 2025 window, and the same ongoing outage re-listed across many daily reports is collapsed so it is counted once. CAISO also files one physical curtailment as many overlapping records \u2014 split across sub-intervals and re-issued under different outage IDs, each carrying the same megawatts \u2014 so for each hour we count only a plant's DEEPEST curtailment and then add across plants. Adding the records up instead would invent capacity that was never offline, most of all in November and December 2025.",
