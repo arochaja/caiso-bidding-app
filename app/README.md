@@ -38,6 +38,8 @@ caiso-bidding-app/
 │   ├── 2025-DAM-BIDS.parquet       (you supply)
 │   ├── 2025-OUTAGES.parquet        (you supply)
 │   └── 2025-DAM-LMP-full.parquet   (you supply)
+├── convergence_bids_2025/   # ← optional: CAISO public convergence (virtual) bids
+│   └── <trade date>/*_PB_CB_PUBLIC_BIDS_N_v1.csv.gz   (you supply; gitignored)
 └── app/
     ├── pipeline.py
     ├── dashboard.py
@@ -93,6 +95,25 @@ average: daily price by region, a price-duration curve, the energy/congestion/lo
 decomposition, and the priciest hours of the year. This is also the source of the
 price-based scarcity signal used by Screen 1.
 
+### Virtual bids / convergence bidding
+The purely financial layer: **convergence bids**, where a trader sells day-ahead energy
+it will never generate (*virtual supply*) or buys energy it will never consume (*virtual
+demand*), and settles the day-ahead-minus-real-time difference. In 2025 that layer bid
+**12.2 GW of virtual supply and 7.6 GW of virtual demand into the average hour** — roughly
+75% of the physical demand bid, in paper megawatts, from 164 pseudonymous traders across
+3,519 pseudonymous nodes.
+
+The panel's question is whether the bets did the job the design allows them for: making the
+two prices converge. The graded test passes (heavier virtual supply goes with a wider
+day-ahead premium, monotonically across all ten deciles), but the layer is **net supply in
+98% of hours**, so its ~60% "right direction" rate is essentially the 60% base rate of
+day-ahead landing above real time — and after a full year of that one-way pressure the
+premium is still there. Bids only: CAISO publishes convergence bid curves but **not the
+awards**, so nothing here is a cleared position or a profit.
+
+This stage is **optional** — `pipeline.py` skips it with a warning when
+`convergence_bids_2025/` is absent, and the panel shows a "no data" notice.
+
 ### 2. Re-identification / fingerprinting
 Demonstrates that the anonymization is **reversible** for many resources. Links an
 anonymous `RESOURCEBID_SEQ` to a **named plant** using two public side-channels:
@@ -118,7 +139,7 @@ the 250 confident forced+planned links, **85 are day-ahead corroborated**.
 ```
 app/
 ├── pipeline.py         # DuckDB preprocessing: raw parquet -> compact derived tables
-├── dashboard.py        # Streamlit + Plotly UI (5 pages)
+├── dashboard.py        # Streamlit + Plotly UI (9 pages)
 ├── run.sh              # launcher (venv + pipeline + streamlit)
 ├── .streamlit/         # theme
 └── data/derived/       # pre-computed outputs (built by pipeline.py)
@@ -141,6 +162,9 @@ when the raw data changes.
 | `bidder_daily_cap.parquet` | daily offered capacity (drill-down overlay) |
 | `reident_matches.parquet` | candidate anon→named links + day-ahead cross-check (`phi_dam`, `dam_corroborates`) |
 | `resource_outage_daily.parquet` | matched plants' outage days (overlay) |
+| `virtual_hourly/daily.parquet` | convergence bids per hour/day × side: MW bid, price-taker MW, traders, nodes, marginal price |
+| `virtual_sc.parquet` | per-trader virtual totals (pseudonymous `sc`) |
+| `virtual_node.parquet` | per-node virtual totals (pseudonymous `node`) |
 | `meta.json` | thresholds, coverage, assumptions |
 
 ## Key assumptions (see the in-app "Method & Assumptions" page)

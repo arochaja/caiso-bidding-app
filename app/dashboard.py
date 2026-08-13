@@ -15,6 +15,7 @@ Run:  streamlit run dashboard.py
 import json
 import os
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -233,6 +234,63 @@ DATA_DICT = {
         ),
         ("self_peak_mw / self_avg_mw", "The fixed self-scheduled (must-take) portion."),
     ],
+    "virtual": [
+        ("day / h", "Trade date, and hour beginning in Pacific time."),
+        ("side", "Supply = a bet that day-ahead is too expensive (an INC). Demand = the opposite."),
+        (
+            "mw_avg / mw_peak",
+            "Megawatts of virtual bids submitted into the average and the busiest hour "
+            "of that day. Bids offered — CAISO does not publish which of them cleared.",
+        ),
+        (
+            "mw_pricetaker_avg",
+            "The portion offered at the -$150 floor (supply) or the $1,000 cap (demand): "
+            "fill-me-at-any-price bids.",
+        ),
+        (
+            "n_sc_peak / n_node_peak",
+            "Distinct traders and distinct nodes active in that day's busiest hour.",
+        ),
+        ("n_bids", "Bid curves — one per trader × node × hour × side, not one per price step."),
+        (
+            "marg_price",
+            "MW-weighted price of the last megawatt on each curve — the bid's reservation "
+            "price, the number that decides whether it clears.",
+        ),
+        (
+            "sc / node",
+            "Pseudonymous trader and location IDs. Stable all year, but they map to no name.",
+        ),
+        ("mwh", "Megawatt-hours of virtual bids submitted across the year. Offered, not awarded."),
+    ],
+    "earnings": [
+        ("res", "Anonymous bidder ID (RESOURCEBID_SEQ). Not a CAISO resource name."),
+        ("market / hub", "Which bid market, and which reference price it was settled at."),
+        ("n_hours", "Hours the bidder had an energy offer or a self-schedule."),
+        ("mwh_offered", "Supply put on the table: the top of the offer curve plus self-schedule."),
+        ("mwh_sold", "Modelled megawatt-hours cleared. NOT a CAISO award — see the method note."),
+        ("revenue_gross", "mwh_sold valued at each hour's reference price. The headline."),
+        (
+            "per_mwh_offered",
+            "revenue_gross / mwh_offered. What the bidder earned per megawatt-hour "
+            "it offered, cleared or not. The ranking metric.",
+        ),
+        ("per_mwh_sold", "revenue_gross / mwh_sold — the realised price on what actually sold."),
+        (
+            "bench_lmp",
+            "Offer-weighted average market price: what the bidder would have earned per "
+            "MWh offered if every offered MW had cleared. The ceiling on per_mwh_offered.",
+        ),
+        ("clear_rate", "mwh_sold / mwh_offered."),
+        ("peak_mw_offered", "Largest single-hour supply offer."),
+        ("per_mw_year", "revenue_gross / peak_mw_offered — annual return on the biggest block."),
+        (
+            "mwh_bought / charge_cost / revenue_net",
+            "Storage diagnostic only. The model cannot "
+            "enforce state of charge, so charging is overstated; these are excluded from every "
+            "ranking.",
+        ),
+    ],
     "withholding": [
         ("res", "Anonymous bidder ID (RESOURCEBID_SEQ). Not a CAISO resource name."),
         ("sc", "Scheduling coordinator ID. Lowest ID where a resource bids under several."),
@@ -331,6 +389,8 @@ PAGE = st.sidebar.radio(
         "Overview",
         "Prices · What power cost",
         "Demand · Who wanted power",
+        "Earnings · Who gets paid most",
+        "Virtual bids · Betting on the gap",
         "Screen 1 · Holding back power",
         "Screen 2 · Unmasking bidders",
         "Screen 3 · Look up one bidder",
@@ -1091,6 +1151,864 @@ cannot be computed for this market. Read the day-ahead view for the demand mix.
             "text/csv",
         )
         show_data_dict("demand", "daily demand")
+
+# =====================================================================
+# PAGE 3b — EARNINGS (modelled energy revenue per bidder)
+# =====================================================================
+elif PAGE == "Earnings · Who gets paid most":
+    st.markdown("## Who gets paid the most for the power they offer")
+    st.caption(
+        "Every bidder puts megawatts on the table each hour. This panel estimates what those "
+        "megawatts **earned**, and ranks bidders by how much they collect per megawatt-hour "
+        "they offer — a measure of how well a resource converts capacity into money."
+    )
+
+    if not have("bidder_revenue.parquet"):
+        st.warning("No earnings data available. Re-run `python pipeline.py`.")
+        st.stop()
+
+    st.warning(
+        "**These are modelled numbers, not CAISO settlements.** The public bid files contain "
+        "**offers only** — no awards, no dispatch, no payments. Everything here is what a "
+        "textbook merit-order market *would* have paid these offers at the published prices. "
+        "It covers **energy alone**: no ancillary services, no capacity or resource-adequacy "
+        "payments, no bilateral hedges, no fuel costs. It is revenue, not profit, and it is an "
+        "estimate."
+    )
+
+    ec1, ec2 = st.columns([1, 1])
+    with ec1:
+        e_market_label = st.radio(
+            "Market",
+            ["Day-ahead (DAM)", "Real-time (RTM)"],
+            horizontal=True,
+            key="earn_market",
+            help="Day-ahead is where the bulk of energy is actually bought and sold. Real-time "
+            "bids are standing offers resubmitted every hour, so the real-time totals measure "
+            "availability rather than settled energy.",
+        )
+        e_market = "DAM" if e_market_label.startswith("Day-ahead") else "RTM"
+    with ec2:
+        e_hub = st.radio(
+            "Paid at which price?",
+            ["SYS", "NP15", "SP15", "ZP26"],
+            horizontal=True,
+            key="earn_hub",
+            format_func=lambda h: HUB_LABEL[h],
+            help="Bids carry no location, so no bidder can be matched to its own pricing node. "
+            "Everyone is settled at the same regional reference price; switch it to see how "
+            "much the answer depends on that choice.",
+        )
+
+    rev = load("bidder_revenue.parquet")
+    rev = rev[(rev["market"] == e_market) & (rev["hub"] == e_hub)].copy()
+    e_meta = META.get("earnings", {}).get(e_market.lower(), {})
+
+    if e_market == "RTM":
+        st.info(
+            "**Read the real-time totals as relative, not as dollars.** A real-time energy bid is "
+            "a standing offer of a resource's whole available capacity, resubmitted hour after "
+            f"hour — so this view 'sells' {e_meta.get('twh_sold', 0):,.0f} TWh against a "
+            "California grid that consumes roughly 230 TWh a year. Real time is a *balancing* "
+            "market: only the small difference from the day-ahead schedule is truly settled "
+            "there, and the bid files do not say what that difference was. The **ranking** is "
+            "still meaningful — it compares bidders on the same basis — but the totals are not "
+            "money anyone received. Use day-ahead for magnitudes."
+        )
+
+    with st.expander("How this estimate is built — in plain terms", expanded=False):
+        st.markdown("""
+CAISO publishes what generators **offered**, never what they were **paid**. So we reconstruct the payment the way the market itself works.
+
+**1 · Each offer is a curve, not a price.** A resource submits a series of (megawatt, price) points saying how much it will produce at each price level. CAISO dispatches *between* those points, so we do too — we find where the hour's price lands on the curve and read off the megawatts.
+
+**2 · It's a single clearing price for everyone.** Whoever clears is paid the market price for that hour, not the price they asked for. A plant that offered at \\$20 in a \\$60 hour is paid \\$60.
+
+**3 · Self-schedules always clear.** Some megawatts are submitted as a fixed "must-take" quantity with no price attached — nuclear and most wind and solar work this way. They take whatever the price turns out to be, including negative prices.
+
+**4 · Revenue = megawatts cleared × the hour's price**, added up over the year.
+
+##### A worked hour
+
+A resource offers this curve, and the price comes in at **\\$60/MWh**:
+
+| Megawatts | Asking price |
+|---|---|
+| 0 MW | \\$12 |
+| 120 MW | \\$45 |
+| 200 MW | \\$180 |
+
+\\$60 sits between the \\$45 and \\$180 points, about 19% of the way up, so the resource lands near **135 MW**. Add a **30 MW** self-schedule and it clears **165 MW**, paid at \\$60 → **\\$9,900** for that hour. It offered 230 MW in total, so it earned **\\$43/MWh offered** — above the market's own average because it showed up in an expensive hour and most of what it offered cleared.
+
+##### What it cannot see
+
+Real dispatch also respects transmission limits, unit commitment, minimum run times and — for batteries — state of charge. None of that is in the bid files, so this is a market-shaped approximation, not a settlement statement.
+""")
+
+    # ---------- headline numbers ----------
+    tot_rev = rev["revenue_gross"].sum()
+    tot_off = rev["mwh_offered"].sum()
+    tot_sold = rev["mwh_sold"].sum()
+    c = st.columns(4)
+    kpi(
+        c[0],
+        "Modelled energy revenue",
+        f"${tot_rev / 1e9:.2f}B",
+        f"across {rev['res'].nunique():,} bidders, {e_market} energy offers only",
+    )
+    kpi(
+        c[1],
+        "Energy sold",
+        f"{tot_sold / 1e6:.0f} TWh",
+        f"{tot_sold / tot_off * 100:.0f}% of the {tot_off / 1e6:.0f} TWh offered cleared"
+        if tot_off
+        else "",
+    )
+    kpi(
+        c[2],
+        "Realised price",
+        f"${tot_rev / tot_sold:.2f}" if tot_sold else "—",
+        "per MWh actually sold — compare with the market average below",
+    )
+    kpi(
+        c[3],
+        "Per MWh offered",
+        f"${tot_rev / tot_off:.2f}" if tot_off else "—",
+        "market-wide, counting every MWh offered whether it cleared or not",
+    )
+
+    # ---------- the ranking ----------
+    st.markdown("")
+    section(
+        "The ranking",
+        "Sorted by **dollars earned per megawatt-hour offered**. The filters matter: a resource "
+        "that offered for a handful of hours can post a spectacular rate on almost no volume, so "
+        "the defaults exclude the very small and the barely-present.",
+    )
+    f1, f2, f3 = st.columns([1, 1, 1])
+    min_mw = f1.slider(
+        "Minimum size (peak MW offered)",
+        0,
+        200,
+        10,
+        step=5,
+        help="Drop bidders whose largest single-hour offer is below this. Sub-megawatt "
+        "resources dominate the raw ranking on rounding alone.",
+    )
+    min_hrs = f2.slider(
+        "Minimum hours present",
+        0,
+        4000,
+        500,
+        step=100,
+        help="Drop bidders that offered in fewer hours than this. One lucky hour is not a "
+        "business model.",
+    )
+    top_n = f3.slider("How many to show", 10, 100, 25, step=5)
+
+    rk = rev[(rev["peak_mw_offered"] >= min_mw) & (rev["n_hours"] >= min_hrs)].copy()
+    rk["shortfall"] = rk["bench_lmp"] - rk["per_mwh_offered"]
+
+    if rk.empty:
+        st.info("No bidders match those filters. Loosen the minimum size or hours.")
+    else:
+        st.caption(
+            f"**{len(rk):,}** of {rev['res'].nunique():,} bidders clear the filters "
+            f"(≥{min_mw} MW, ≥{min_hrs:,} hours)."
+        )
+        show = rk.nlargest(top_n, "per_mwh_offered")[
+            [
+                "res",
+                "per_mwh_offered",
+                "bench_lmp",
+                "shortfall",
+                "clear_rate",
+                "revenue_gross",
+                "mwh_offered",
+                "peak_mw_offered",
+                "n_hours",
+            ]
+        ].rename(
+            columns={
+                "res": "Bidder",
+                "per_mwh_offered": "$/MWh offered",
+                "bench_lmp": "Market price in its hours",
+                "shortfall": "Lost to not clearing",
+                "clear_rate": "Cleared",
+                "revenue_gross": "Revenue",
+                "mwh_offered": "MWh offered",
+                "peak_mw_offered": "Peak MW",
+                "n_hours": "Hours",
+            }
+        )
+        st.dataframe(
+            show,
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "Bidder": st.column_config.NumberColumn(format="%d"),
+                "$/MWh offered": st.column_config.NumberColumn(format="$%.2f"),
+                "Market price in its hours": st.column_config.NumberColumn(format="$%.2f"),
+                "Lost to not clearing": st.column_config.NumberColumn(format="$%.2f"),
+                "Cleared": st.column_config.NumberColumn(format="%.1f%%"),
+                "Revenue": st.column_config.NumberColumn(format="$%.0f"),
+                "MWh offered": st.column_config.NumberColumn(format="%.0f"),
+                "Peak MW": st.column_config.NumberColumn(format="%.1f"),
+                "Hours": st.column_config.NumberColumn(format="%d"),
+            },
+        )
+
+        # ---------- the decomposition ----------
+        st.markdown("")
+        left, right = st.columns([3, 2])
+        with left:
+            section(
+                "Where the money actually comes from",
+                "Each dot is a bidder. Across is the **average market price during the hours it "
+                "chose to offer**; up is what it **actually earned per MWh offered**. Nothing can "
+                "sit above the diagonal — that would mean being paid more than the going price. "
+                "The drop below the line is the value of everything a bidder offered that "
+                "didn't clear.",
+            )
+            fig = go.Figure()
+            lo = float(min(rk["bench_lmp"].min(), rk["per_mwh_offered"].min()))
+            hi = float(max(rk["bench_lmp"].max(), rk["per_mwh_offered"].max()))
+            fig.add_trace(
+                go.Scatter(
+                    x=[lo, hi],
+                    y=[lo, hi],
+                    mode="lines",
+                    name="Everything offered clears",
+                    line=dict(color=MUTED, width=1.4, dash="dash"),
+                    hoverinfo="skip",
+                )
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=rk["bench_lmp"],
+                    y=rk["per_mwh_offered"],
+                    mode="markers",
+                    name="Bidder",
+                    marker=dict(
+                        size=8,
+                        color=rk["clear_rate"] * 100,
+                        colorscale=[[0, SEQ_BLUE[0]], [1, SEQ_BLUE[6]]],
+                        showscale=True,
+                        colorbar=dict(title=dict(text="% cleared", side="right"), thickness=12),
+                        line=dict(width=0.5, color="white"),
+                        opacity=0.85,
+                    ),
+                    customdata=rk[["res", "peak_mw_offered", "revenue_gross"]],
+                    hovertemplate=(
+                        "Bidder %{customdata[0]}<br>Market price in its hours: $%{x:.2f}"
+                        "<br>Earned per MWh offered: $%{y:.2f}"
+                        "<br>Peak %{customdata[1]:.0f} MW · $%{customdata[2]:,.0f}<extra></extra>"
+                    ),
+                )
+            )
+            style(
+                fig,
+                height=420,
+                ytitle="Earned per MWh offered ($)",
+                xtitle="Average market price during its offering hours ($/MWh)",
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        with right:
+            section("The takeaway", None)
+            best = rk.nlargest(1, "per_mwh_offered").iloc[0]
+            med_bench = rk["bench_lmp"].median()
+            med_short = rk["shortfall"].median()
+            st.markdown(
+                f"""
+Two things, and only two, decide what a bidder earns per megawatt offered:
+
+**1 · Which hours it shows up in.** That's the horizontal axis — the market price during its
+offering hours. A resource present only in expensive evening hours starts from a much higher
+base than one running flat all year. The median bidder here offers into
+**\\${med_bench:,.2f}/MWh** hours.
+
+**2 · How much of what it offers actually clears.** That's the drop below the diagonal, a median
+of **\\${med_short:,.2f}/MWh** — capacity priced out of the market.
+
+Notice what is *absent*: there's no third lever. Because every winner is paid the same clearing
+price, no bidder can be paid above the going rate for the hours it chose. Bidding cleverly
+cannot beat the diagonal — it can only avoid falling far below it.
+
+The top bidder here, **{int(best["res"])}**, earns **\\${best["per_mwh_offered"]:,.2f}/MWh
+offered** against a market price of **\\${best["bench_lmp"]:,.2f}** in its hours, clearing
+**{best["clear_rate"] * 100:.0f}%** of what it offered across {int(best["n_hours"]):,} hours.
+"""
+            )
+
+        # ---------- one bidder over the year ----------
+        st.markdown("")
+        section(
+            "One bidder, month by month",
+            "How a single bidder's earnings and clearing rate moved across 2025.",
+        )
+        pick = st.selectbox(
+            "Bidder",
+            show["Bidder"].tolist(),
+            format_func=lambda r: f"Bidder {r}",
+            help="The bidders in the ranking above, in the same order.",
+        )
+        if have("bidder_revenue_monthly.parquet"):
+            bm = load("bidder_revenue_monthly.parquet")
+            bm = bm[(bm["market"] == e_market) & (bm["hub"] == e_hub) & (bm["res"] == pick)].copy()
+            bm["month"] = pd.to_datetime(bm["month"])
+            bm = bm.sort_values("month")
+            bm["per_mwh_offered"] = bm["revenue_gross"] / bm["mwh_offered"].replace(0, pd.NA)
+            fig3 = make_subplots(specs=[[{"secondary_y": True}]])
+            fig3.add_trace(
+                go.Bar(
+                    x=bm["month"],
+                    y=bm["revenue_gross"] / 1e6,
+                    name="Revenue",
+                    marker_color=SEQ_BLUE[3],
+                    hovertemplate="%{x|%b %Y}<br>Revenue: $%{y:.2f}M<extra></extra>",
+                ),
+                secondary_y=False,
+            )
+            fig3.add_trace(
+                go.Scatter(
+                    x=bm["month"],
+                    y=bm["per_mwh_offered"],
+                    mode="lines+markers",
+                    name="Earned per MWh offered",
+                    line=dict(color=ORANGE, width=2),
+                    hovertemplate="%{x|%b %Y}<br>$%{y:.2f} per MWh offered<extra></extra>",
+                ),
+                secondary_y=True,
+            )
+            style(fig3, height=320)
+            fig3.update_yaxes(title_text="Revenue ($M)", secondary_y=False)
+            fig3.update_yaxes(
+                title_text="$ per MWh offered",
+                secondary_y=True,
+                showgrid=False,
+                color=MUTED,
+                title_font=dict(size=12),
+            )
+            st.plotly_chart(fig3, use_container_width=True)
+
+    # ---------- storage diagnostic ----------
+    chg = rev[rev["mwh_bought"] > 0]
+    if len(chg):
+        st.markdown("")
+        section(
+            "Bidders that also buy power",
+            f"{len(chg):,} bidders submit a **negative** leg on their offer curve — they pay to "
+            "take power in, which is how batteries and pumped storage charge.",
+        )
+        st.error(
+            "**This section is a diagnostic, and it overstates buying.** What actually stops a "
+            "battery charging in every cheap hour is its **state of charge** — it cannot buy what "
+            "it has no room to store. CAISO's optimiser enforces that across the whole day; a "
+            "model that looks at each hour on its own cannot. These bidders come out buying about "
+            f"{chg['mwh_bought'].sum() / max(chg['mwh_sold'].sum(), 1):.1f} MWh for every MWh "
+            "they sell, where a real battery is nearer 1.15. Treat the purchase column as "
+            "'this bidder charges', not as a quantity. **Nothing in the ranking above uses it.**"
+        )
+        st.dataframe(
+            chg.nlargest(15, "mwh_bought")[
+                ["res", "peak_mw_offered", "mwh_sold", "revenue_gross", "mwh_bought", "charge_cost"]
+            ].rename(
+                columns={
+                    "res": "Bidder",
+                    "peak_mw_offered": "Peak MW",
+                    "mwh_sold": "MWh sold",
+                    "revenue_gross": "Revenue from sales",
+                    "mwh_bought": "MWh bought (overstated)",
+                    "charge_cost": "Cost of buying (overstated)",
+                }
+            ),
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "Bidder": st.column_config.NumberColumn(format="%d"),
+                "Peak MW": st.column_config.NumberColumn(format="%.1f"),
+                "MWh sold": st.column_config.NumberColumn(format="%.0f"),
+                "Revenue from sales": st.column_config.NumberColumn(format="$%.0f"),
+                "MWh bought (overstated)": st.column_config.NumberColumn(format="%.0f"),
+                "Cost of buying (overstated)": st.column_config.NumberColumn(format="$%.0f"),
+            },
+        )
+
+    # ---------- how much the price choice matters ----------
+    st.markdown("")
+    all_hubs = load("bidder_revenue.parquet")
+    all_hubs = all_hubs[all_hubs["market"] == e_market]
+    hub_tot = (
+        all_hubs.groupby("hub")
+        .apply(
+            lambda g: pd.Series(
+                {
+                    "revenue": g["revenue_gross"].sum(),
+                    "per_mwh": g["revenue_gross"].sum() / max(g["mwh_offered"].sum(), 1),
+                }
+            ),
+            include_groups=False,
+        )
+        .reset_index()
+    )
+    spread = hub_tot["per_mwh"].max() - hub_tot["per_mwh"].min()
+    section(
+        "How much does the price choice change the answer?",
+        f"Bids carry no location, so every bidder is settled at the same reference price. "
+        f"Swapping which one moves the market-wide figure by **\\${spread:.2f}/MWh offered** — "
+        f"about {spread / max(hub_tot['per_mwh'].mean(), 0.01) * 100:.0f}% of the level. "
+        "Rankings are far more stable than totals, because the same price applies to everyone.",
+    )
+    fig4 = go.Figure(
+        go.Bar(
+            x=[HUB_LABEL[h] for h in hub_tot["hub"]],
+            y=hub_tot["per_mwh"],
+            marker_color=[HUB_COLOR.get(h, BLUE) for h in hub_tot["hub"]],
+            hovertemplate="%{x}<br>$%{y:.2f} per MWh offered<extra></extra>",
+        )
+    )
+    style(fig4, height=260, legend=False, ytitle="$ per MWh offered (all bidders)")
+    st.plotly_chart(fig4, use_container_width=True)
+
+    st.download_button(
+        "⬇ Download bidder earnings (CSV)",
+        rev.to_csv(index=False),
+        f"caiso_bidder_earnings_{e_market.lower()}_{e_hub.lower()}_2025.csv",
+        "text/csv",
+    )
+    show_data_dict("earnings", "bidder earnings")
+
+# =====================================================================
+# PAGE 3c — CONVERGENCE ("VIRTUAL") BIDS
+# =====================================================================
+elif PAGE == "Virtual bids · Betting on the gap":
+    st.markdown("## Betting on the gap between two prices")
+    st.caption(
+        "Not every bid in this market comes from a power plant. A **convergence bid** — a "
+        "*virtual* — is a pure financial bet on the difference between the day-ahead price and "
+        "the real-time price. No electricity is ever generated or consumed. This panel measures "
+        "how big that layer got in 2025, which way it leaned, and whether it did the job it is "
+        "allowed to exist for."
+    )
+
+    if not have("virtual_daily.parquet"):
+        st.warning(
+            "No convergence bid data available. Download CAISO's public convergence bids into "
+            "`convergence_bids_2025/` and re-run `python pipeline.py`."
+        )
+        st.stop()
+
+    VS = META.get("virtual", {}) or {}
+
+    with st.expander("How to read this panel — in plain terms", expanded=False):
+        st.markdown("""
+CAISO settles power twice. The **day-ahead** market sets a price the day before; the **real-time**
+market sets another one as the electricity actually flows. The two rarely agree.
+
+A **convergence bid** lets a trader bet on that disagreement without owning anything:
+
+- **Virtual supply** (an *INC*) — sell power day-ahead you will never generate, then buy it back in
+  real time. You win when **day-ahead lands above real time**.
+- **Virtual demand** (a *DEC*) — buy power day-ahead you will never consume, then sell it back in
+  real time. You win when **real time lands above day-ahead**.
+
+This is deliberate market design, not a loophole. The bets are supposed to be self-cancelling: if
+day-ahead is priced too high, virtual supply floods in and drags it back down, so the two prices
+**converge**. That is the whole point — and it is the thing worth auditing.
+
+**What this panel can and cannot see.** CAISO publishes the bid *curves* but not the *awards*, so
+every megawatt here is **offered, not cleared**. The trader ID and the location ID are both
+pseudonymised — stable across the year, so a trader can be followed, but attached to no company and
+no map. So the panel reports how much was bid, which way it leaned, and whether that direction
+matched the price gap that followed. It cannot report anyone's profit.
+""")
+
+    vd = load("virtual_daily.parquet")
+    vd["day"] = pd.to_datetime(vd["day"])
+    vh = load("virtual_hourly.parquet")
+    vh["h"] = pd.to_datetime(vh["h"])
+
+    # wide (one row per day / hour, a column per side) — every chart below wants the pair
+    vdw = vd.pivot(index="day", columns="side", values="mw_avg").fillna(0).reset_index()
+    for _s in ("Supply", "Demand"):
+        if _s not in vdw.columns:
+            vdw[_s] = 0.0
+    vdw["net"] = vdw["Supply"] - vdw["Demand"]
+    vhw = vh.pivot(index="h", columns="side", values="mw").fillna(0).reset_index()
+    for _s in ("Supply", "Demand"):
+        if _s not in vhw.columns:
+            vhw[_s] = 0.0
+    vhw["net"] = vhw["Supply"] - vhw["Demand"]
+
+    sup_avg = vhw["Supply"].mean()
+    dem_avg = vhw["Demand"].mean()
+    phys_dem = META.get("demand", {}).get("dam_avg_mw", 0)
+
+    c = st.columns(4)
+    kpi(
+        c[0],
+        "Virtual supply bid",
+        f"{sup_avg / 1000:.1f} GW",
+        "per hour on average — sold day-ahead, never generated",
+    )
+    kpi(
+        c[1],
+        "Virtual demand bid",
+        f"{dem_avg / 1000:.1f} GW",
+        "per hour — bought day-ahead, never consumed",
+    )
+    kpi(
+        c[2],
+        "Traders placing them",
+        f"{VS.get('n_traders', vd['n_sc_peak'].max()):,.0f}",
+        f"pseudonymous IDs, across {VS.get('n_nodes', 0):,} locations",
+    )
+    kpi(
+        c[3],
+        "Net lean",
+        f"+{(sup_avg - dem_avg) / 1000:.1f} GW supply",
+        "the layer's standing bet: day-ahead is priced too high",
+        tone="warning",
+    )
+
+    st.markdown("")
+    section(
+        "How big the bet got",
+        "Megawatts of virtual bids submitted into the average hour of each day. Blue is virtual "
+        "**supply**, orange virtual **demand**. Neither line is backed by a generator or a "
+        "customer — this is the financial layer sitting on top of the physical market.",
+    )
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=vdw["day"],
+            y=vdw["Supply"] / 1000,
+            mode="lines",
+            name="Virtual supply (sell day-ahead)",
+            line=dict(color=BLUE, width=2),
+            fill="tozeroy",
+            fillcolor="rgba(42,120,214,0.10)",
+            hovertemplate="%{x|%b %d}<br>Virtual supply: %{y:.2f} GW<extra></extra>",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=vdw["day"],
+            y=vdw["Demand"] / 1000,
+            mode="lines",
+            name="Virtual demand (buy day-ahead)",
+            line=dict(color=ORANGE, width=2),
+            fill="tozeroy",
+            fillcolor="rgba(235,104,52,0.10)",
+            hovertemplate="%{x|%b %d}<br>Virtual demand: %{y:.2f} GW<extra></extra>",
+        )
+    )
+    style(fig, height=360, ytitle="GW bid (daily average hour)")
+    st.plotly_chart(fig, use_container_width=True)
+
+    if phys_dem:
+        st.caption(
+            f"For scale: real buyers bid about **{phys_dem / 1000:.1f} GW** into the average "
+            f"day-ahead hour. The virtual layer adds roughly "
+            f"**{(sup_avg + dem_avg) / phys_dem * 100:.0f}%** on top of that in paper megawatts, "
+            f"and only **{VS.get('pricetaker_share_pct', 0):.1f}%** of it is bid at the price "
+            "floor or cap — against about 95% of physical demand that takes any price at all. "
+            "The financial layer is the price-sensitive part of this market."
+        )
+
+    # ---- direction, and whether it was right -------------------------------
+    st.markdown("")
+    section(
+        "Which way the money leaned — and what the prices did next",
+        "Purple is the **net** virtual position — above zero the layer is net *supply*, betting "
+        "day-ahead is too expensive. Black is the gap that actually materialised, day-ahead minus "
+        "real-time, at the reference price you pick below. Both are 7-day averages, because the "
+        "day-to-day gap swings ten times wider than the signal in it; the exact tests come next.",
+    )
+    hub = st.radio(
+        "Reference price for the gap",
+        ["System average", "SP15", "NP15", "ZP26"],
+        horizontal=True,
+        help="Virtual bids carry a pseudonymous node ID, so they cannot be settled at their own "
+        "location. The gap is therefore measured at a regional reference price; switch it to see "
+        "how much that choice moves the answer.",
+    )
+    hub_key = "SYS" if hub == "System average" else hub
+
+    ph = load("price_hourly.parquet")
+    ph = ph[ph["hub"] == hub_key].copy()
+    ph["h"] = pd.to_datetime(ph["h"])
+    _dam = ph[ph["market"] == "DAM"][["h", "lmp"]].rename(columns={"lmp": "dam"})
+    _rtm = ph[ph["market"] == "RTM"][["h", "lmp"]].rename(columns={"lmp": "rtm"})
+    gaps = _dam.merge(_rtm, on="h")
+    gaps["gap"] = gaps["dam"] - gaps["rtm"]
+
+    cf = vhw.merge(gaps, on="h")  # hours with both a virtual bid and both prices
+    # The raw daily gap swings ±$30 around a mean near +$1, so plotted straight it is a
+    # solid band of noise that hides the very thing this chart is about. A 7-day mean
+    # keeps the shape of the year and is labelled as smoothed on the axis and in the hover.
+    cf_day = cf.assign(day=cf["h"].dt.floor("D")).groupby("day", as_index=False)["gap"].mean()
+    cf_day["gap_7d"] = cf_day["gap"].rolling(7, min_periods=3).mean()
+    # Both series get the SAME 7-day window, so the eye is comparing like with like. This
+    # chart is for shape only — the actual test of the relationship is the decile chart and
+    # the correlation below, both computed on the raw hourly numbers.
+    vdw["net_7d"] = vdw["net"].rolling(7, min_periods=3).mean()
+
+    fig2 = make_subplots(specs=[[{"secondary_y": True}]])
+    fig2.add_trace(
+        go.Scatter(
+            x=vdw["day"],
+            y=vdw["net_7d"] / 1000,
+            mode="lines",
+            name="Net virtual position, supply − demand (7-day average)",
+            line=dict(color=VIOLET, width=2),
+            fill="tozeroy",
+            fillcolor="rgba(74,58,167,0.12)",
+            hovertemplate="%{x|%b %d}<br>Net, 7-day avg: %{y:+.2f} GW<extra></extra>",
+        ),
+        secondary_y=False,
+    )
+    fig2.add_trace(
+        go.Scatter(
+            x=cf_day["day"],
+            y=cf_day["gap_7d"],
+            mode="lines",
+            name="Day-ahead minus real-time price (7-day average)",
+            line=dict(color=INK, width=2),
+            hovertemplate="%{x|%b %d}<br>Gap, 7-day avg: %{y:+.2f} $/MWh<extra></extra>",
+        ),
+        secondary_y=True,
+    )
+    fig2.add_hline(y=0, line_width=1, line_dash="dot", line_color=MUTED, secondary_y=True)
+    style(fig2, height=380, ytitle="Net GW bid")
+    fig2.update_yaxes(
+        title_text="Day-ahead − real-time, 7-day avg ($/MWh)", secondary_y=True, showgrid=False
+    )
+    st.plotly_chart(fig2, use_container_width=True)
+
+    pct_net_supply = (cf["net"] > 0).mean() * 100
+    base_rate = (cf["gap"] > 0).mean() * 100
+    hit = (np.sign(cf["net"]) == np.sign(cf["gap"])).mean() * 100
+    corr = cf["net"].corr(cf["gap"])
+
+    st.markdown("")
+    section(
+        "Did the bets close the gap?",
+        "The bet only works as market design if more virtual supply shows up when day-ahead is "
+        "genuinely overpriced. Left: hours sorted into ten groups by how supply-heavy the layer "
+        "was, against the gap that followed. Right: how often the layer pointed the right way, "
+        "grouped by how big the gap turned out to be.",
+    )
+    left, right = st.columns(2)
+    with left:
+        cf = cf.copy()
+        cf["bin"] = pd.qcut(cf["net"], 10, duplicates="drop")
+        dec = (
+            cf.groupby("bin", observed=True)
+            .agg(net=("net", "mean"), gap=("gap", "mean"), n=("gap", "size"))
+            .reset_index()
+        )
+        # Label each decile by its GW range. Two adjacent deciles can round to the same
+        # label when the middle of the distribution is tight, and plotly would silently
+        # merge same-named bars into one — so widen the precision until they are distinct.
+        for _dp in (1, 2, 3):
+            dec["label"] = dec["bin"].apply(
+                lambda iv, _dp=_dp: f"{iv.left / 1000:.{_dp}f} to {iv.right / 1000:.{_dp}f}"
+            )
+            if dec["label"].is_unique:
+                break
+        # One colour, deliberately. Colouring the negative bars red would read as "these
+        # hours went wrong", when a negative gap in the least supply-heavy hours is the
+        # direction the design predicts. The story is the climb, and the axis carries the sign.
+        fig3 = go.Figure(
+            go.Bar(
+                x=dec["label"],
+                y=dec["gap"],
+                marker_color=BLUE,
+                marker_line_width=0,
+                customdata=np.stack([dec["n"], dec["net"] / 1000], axis=-1),
+                hovertemplate="Net %{customdata[1]:.1f} GW supply<br>"
+                "Average gap: %{y:+.2f} $/MWh<br>%{customdata[0]:,} hours<extra></extra>",
+            )
+        )
+        style(
+            fig3,
+            height=330,
+            legend=False,
+            ytitle="Avg day-ahead − real-time ($/MWh)",
+            xtitle="Net virtual supply that hour (GW)",
+        )
+        st.plotly_chart(fig3, use_container_width=True)
+        st.caption(
+            f"Every step up in virtual supply comes with a bigger day-ahead premium — from "
+            f"**{dec['gap'].iloc[0]:+.2f}** \\$/MWh in the least supply-heavy tenth of hours to "
+            f"**{dec['gap'].iloc[-1]:+.2f}** in the most. The climb is what the design predicts; "
+            f"the hour-by-hour correlation behind it is only **{corr:+.2f}** across "
+            f"{len(cf):,} hours, so it is a tendency, not a tight relationship."
+        )
+    with right:
+        cf["absbin"] = pd.cut(
+            cf["gap"].abs(),
+            [-0.01, 5, 20, 50, 1e9],
+            labels=["under $5", "$5–20", "$20–50", "over $50"],
+        )
+        hb = (
+            cf.groupby("absbin", observed=True)
+            .apply(
+                lambda g: pd.Series(
+                    {
+                        "hit": (np.sign(g["net"]) == np.sign(g["gap"])).mean() * 100,
+                        "n": len(g),
+                    }
+                ),
+                include_groups=False,
+            )
+            .reset_index()
+        )
+        # The sample thins out fast — the widest bucket is a couple of dozen hours out of
+        # 8,700 — so the count goes on the axis label, not just in the hover. A 30% read
+        # off 20 hours should not look like the 58% read off 4,395.
+        fig4 = go.Figure(
+            go.Bar(
+                x=[
+                    f"{b}<br><span style='font-size:11px'>{n:,.0f} hours</span>"
+                    for b, n in zip(hb["absbin"].astype(str), hb["n"])
+                ],
+                y=hb["hit"],
+                marker_color=[BLUE if v >= 50 else RED for v in hb["hit"]],
+                marker_line_width=0,
+                text=[f"{v:.0f}%" for v in hb["hit"]],
+                textposition="outside",
+                customdata=hb["n"],
+                hovertemplate="Gap %{x}<br>Right direction: %{y:.1f}%<extra></extra>",
+            )
+        )
+        fig4.add_hline(y=50, line_width=1, line_dash="dot", line_color=MUTED)
+        style(
+            fig4,
+            height=330,
+            legend=False,
+            ytitle="Hours the layer pointed the right way (%)",
+            xtitle="How big the gap turned out to be",
+        )
+        fig4.update_yaxes(range=[0, 100])
+        st.plotly_chart(fig4, use_container_width=True)
+        st.caption(
+            "The dotted line is a coin flip. The layer earns its keep on the small gaps and is "
+            "on the wrong side of the big ones."
+        )
+
+    flip = cf[cf["net"] < 0]
+    flip_right = (flip["gap"] < 0).mean() * 100 if len(flip) else 0
+    st.info(
+        f"**Read the headline number carefully.** The layer bid **net supply in "
+        f"{pct_net_supply:.0f}%** of hours — a standing one-way bet that day-ahead is overpriced, "
+        f"not a position that flips with conditions. So the **{hit:.0f}%** of hours it pointed "
+        f"the right way is very nearly just the **{base_rate:.0f}%** of hours in which day-ahead "
+        f"happened to land above real time. That number is the market's standing tilt showing "
+        f"through, not a measure of skill.\n\n"
+        f"The graded version above is the more informative test, and it passes: heavier virtual "
+        f"supply really does go with a wider day-ahead premium, and on the "
+        f"**{len(flip):,} hours** the layer did flip to net *demand*, real time came in above "
+        f"day-ahead **{flip_right:.0f}%** of the time. The traders are reading the market. What "
+        f"they have not done is flatten it — after a full year of one-directional pressure the "
+        f"day-ahead premium the bets exist to arbitrage away is still there, averaging "
+        f"**\\${cf['gap'].mean():+.2f}/MWh**."
+    )
+
+    # ---- who ---------------------------------------------------------------
+    st.markdown("")
+    section(
+        "Who is placing the bets, and when",
+        "Left: the busiest traders by megawatt-hours bid across the year, split by direction. "
+        "Right: the shape of an average day.",
+    )
+    lo, ro = st.columns(2)
+    with lo:
+        if have("virtual_sc.parquet"):
+            vsc = load("virtual_sc.parquet")
+            tot = vsc.groupby("sc", as_index=False)["mwh"].sum().sort_values("mwh", ascending=False)
+            top = tot.head(15)["sc"].tolist()
+            sub = vsc[vsc["sc"].isin(top)].copy()
+            sub["sc"] = pd.Categorical(sub["sc"], categories=top[::-1], ordered=True)
+            fig5 = go.Figure()
+            for side, colr in (("Supply", BLUE), ("Demand", ORANGE)):
+                s = sub[sub["side"] == side].sort_values("sc")
+                fig5.add_trace(
+                    go.Bar(
+                        y=[f"Trader {v}" for v in s["sc"]],
+                        x=s["mwh"] / 1e6,
+                        name=f"Virtual {side.lower()}",
+                        orientation="h",
+                        marker_color=colr,
+                        marker_line_width=0,
+                        hovertemplate="%{y}<br>" + side + ": %{x:.2f} TWh bid<extra></extra>",
+                    )
+                )
+            # horizontal stacks otherwise legend in reverse of the plotting order
+            fig5.update_layout(barmode="stack", legend_traceorder="normal")
+            style(fig5, height=420, ytitle=None, xtitle="TWh of virtual bids submitted")
+            st.plotly_chart(fig5, use_container_width=True)
+            st.caption(
+                f"The five busiest traders place **{VS.get('top5_share_pct', 0):.0f}%** of all "
+                f"virtual megawatt-hours, the top ten **{VS.get('top10_share_pct', 0):.0f}%**. "
+                "IDs are pseudonyms and cannot be resolved to a company."
+            )
+    with ro:
+        hod = (
+            vh.assign(hr=vh["h"].dt.hour)
+            .groupby(["hr", "side"], as_index=False)["mw"]
+            .mean()
+            .pivot(index="hr", columns="side", values="mw")
+            .reset_index()
+        )
+        fig6 = go.Figure()
+        for side, colr in (("Supply", BLUE), ("Demand", ORANGE)):
+            if side in hod.columns:
+                fig6.add_trace(
+                    go.Scatter(
+                        x=hod["hr"],
+                        y=hod[side] / 1000,
+                        mode="lines",
+                        name=f"Virtual {side.lower()}",
+                        line=dict(color=colr, width=2.4),
+                        hovertemplate="Hour %{x}:00<br>" + side + ": %{y:.2f} GW<extra></extra>",
+                    )
+                )
+        style(fig6, height=420, ytitle="GW bid (average)", xtitle="Hour of the day")
+        st.plotly_chart(fig6, use_container_width=True)
+        st.caption(
+            "Virtual activity roughly doubles between the small hours and the middle of the day, "
+            "and supply outruns demand in every single hour."
+        )
+
+    st.markdown("")
+    dl1, dl2 = st.columns(2)
+    with dl1:
+        st.download_button(
+            "⬇ Download daily virtual bids (CSV)",
+            vd.to_csv(index=False),
+            "caiso_virtual_bids_daily_2025.csv",
+            "text/csv",
+        )
+    with dl2:
+        if have("virtual_sc.parquet"):
+            st.download_button(
+                "⬇ Download per-trader totals (CSV)",
+                load("virtual_sc.parquet").to_csv(index=False),
+                "caiso_virtual_bids_by_trader_2025.csv",
+                "text/csv",
+            )
+    show_data_dict("virtual", "virtual bids")
+
+    st.caption(
+        "**Caveats.** These are bids submitted, not positions cleared — CAISO publishes the "
+        "convergence bid curves but not the awards, so no profit or loss can be computed here and "
+        "the megawatt-hours are offered volume. Traders and nodes are pseudonymous, so the gap is "
+        "measured at a regional reference price rather than each bid's own node, and a trader ID "
+        "is never attributable to a company. 2025-07-01 is published empty by CAISO and 2025-03-09 "
+        "is the 23-hour spring-forward day."
+    )
 
 # =====================================================================
 # PAGE 2 — ECONOMIC WITHHOLDING
@@ -2797,6 +3715,20 @@ else:
 > **Outages** — the {int((1 - t["tight_percentile"]) * 100)}% of hours with the most capacity on a **forced (unplanned)** outage (≥ {t["tight_mw"]:,.0f} MW); scheduled maintenance is excluded. Needs no price data.
 > **Day-ahead prices** — the {int((1 - t.get("price_tight_percentile", 0.9)) * 100)}% of hours with the highest day-ahead system price (≥ \\${t.get("price_tight_lmp", 0):.0f}/MWh). The market's own scarcity signal.
 > **Real-time prices** — the {int((1 - t.get("price_tight_percentile", 0.9)) * 100)}% of hours whose *average* 5-minute real-time system price was highest (≥ \\${t.get("price_tight_lmp_rtm", 0):.0f}/MWh). Because it is an hourly average, one 5-minute spike inside an otherwise cheap hour does not by itself mark the hour short.
+""")
+
+    _em = META.get("earnings", {})
+    if _em:
+        _dam, _rtm = _em.get("dam", {}), _em.get("rtm", {})
+        st.markdown(f"""
+**7 · Estimated earnings (Earnings panel).** The one number in this tool that is **modelled rather than measured**. CAISO's public bid files carry offers only — no awards, no dispatch, no payments — so there is no way to *read* what a resource earned. Instead we replay the market's own rule: each offer curve is a monotone (megawatt, price) schedule that CAISO dispatches *between*, so we interpolate to find where the hour's price lands on it, add any self-scheduled megawatts (must-take, so they clear at any price), and value the result at that hour's price. Summed over the year that gives **\\${_dam.get("revenue_bn", 0):.2f}B** across {_dam.get("n_bidders", 0):,} day-ahead bidders on {_dam.get("twh_sold", 0):,.0f} TWh sold, a realised **\\${_dam.get("realised_per_mwh", 0):.2f}/MWh** against a system average LMP of \\${META.get("price", {}).get("avg_sys_lmp", 0):.2f}/MWh.
+
+Four limits worth holding onto, in rough order of how much they matter:
+
+> **Energy only.** No ancillary services, no capacity or resource-adequacy payments, no bilateral hedges or congestion revenue rights, no tax credits, and no fuel costs. Many resources earn much of their living outside the energy market, so this is neither total revenue nor profit.
+> **No location.** Bids carry no node, and only 223 of the {META.get("n_resources", 0):,} catalogued plants — about 32% of megawatts — could be matched to a pricing node even in principle. So every bidder is settled at a regional reference price. The panel lets you switch between the system average and the three hubs; the market-wide level moves by a few dollars per MWh, while the ranking barely moves, because the same price applies to everyone.
+> **No commitment, no state of charge.** Real dispatch respects transmission limits, minimum run times, unit commitment and — for storage — how full the battery already is. None of that is in the bid files. Where a thermal unit's curve starts above zero we credit it nothing rather than inventing minimum-load generation it never produced, and storage charging is reported only as a flagged diagnostic, never in a ranking.
+> **Real-time totals are not dollars.** A real-time energy bid is a standing offer of a resource's whole capacity, resubmitted hourly, so that view "sells" {_rtm.get("twh_sold", 0):,.0f} TWh against a grid that consumes roughly 230 TWh a year. Real time settles only the *difference* from the day-ahead schedule, and the bid files do not say what that difference was. Compare bidders there; take magnitudes from day-ahead.
 """)
 
     section("Key assumptions & caveats")
