@@ -233,6 +233,34 @@ DATA_DICT = {
         ),
         ("self_peak_mw / self_avg_mw", "The fixed self-scheduled (must-take) portion."),
     ],
+    "earnings": [
+        ("res", "Anonymous bidder ID (RESOURCEBID_SEQ). Not a CAISO resource name."),
+        ("market / hub", "Which bid market, and which reference price it was settled at."),
+        ("n_hours", "Hours the bidder had an energy offer or a self-schedule."),
+        ("mwh_offered", "Supply put on the table: the top of the offer curve plus self-schedule."),
+        ("mwh_sold", "Modelled megawatt-hours cleared. NOT a CAISO award — see the method note."),
+        ("revenue_gross", "mwh_sold valued at each hour's reference price. The headline."),
+        (
+            "per_mwh_offered",
+            "revenue_gross / mwh_offered. What the bidder earned per megawatt-hour "
+            "it offered, cleared or not. The ranking metric.",
+        ),
+        ("per_mwh_sold", "revenue_gross / mwh_sold — the realised price on what actually sold."),
+        (
+            "bench_lmp",
+            "Offer-weighted average market price: what the bidder would have earned per "
+            "MWh offered if every offered MW had cleared. The ceiling on per_mwh_offered.",
+        ),
+        ("clear_rate", "mwh_sold / mwh_offered."),
+        ("peak_mw_offered", "Largest single-hour supply offer."),
+        ("per_mw_year", "revenue_gross / peak_mw_offered — annual return on the biggest block."),
+        (
+            "mwh_bought / charge_cost / revenue_net",
+            "Storage diagnostic only. The model cannot "
+            "enforce state of charge, so charging is overstated; these are excluded from every "
+            "ranking.",
+        ),
+    ],
     "withholding": [
         ("res", "Anonymous bidder ID (RESOURCEBID_SEQ). Not a CAISO resource name."),
         ("sc", "Scheduling coordinator ID. Lowest ID where a resource bids under several."),
@@ -331,6 +359,7 @@ PAGE = st.sidebar.radio(
         "Overview",
         "Prices · What power cost",
         "Demand · Who wanted power",
+        "Earnings · Who gets paid most",
         "Screen 1 · Holding back power",
         "Screen 2 · Unmasking bidders",
         "Screen 3 · Look up one bidder",
@@ -1091,6 +1120,432 @@ cannot be computed for this market. Read the day-ahead view for the demand mix.
             "text/csv",
         )
         show_data_dict("demand", "daily demand")
+
+# =====================================================================
+# PAGE 3b — EARNINGS (modelled energy revenue per bidder)
+# =====================================================================
+elif PAGE == "Earnings · Who gets paid most":
+    st.markdown("## Who gets paid the most for the power they offer")
+    st.caption(
+        "Every bidder puts megawatts on the table each hour. This panel estimates what those "
+        "megawatts **earned**, and ranks bidders by how much they collect per megawatt-hour "
+        "they offer — a measure of how well a resource converts capacity into money."
+    )
+
+    if not have("bidder_revenue.parquet"):
+        st.warning("No earnings data available. Re-run `python pipeline.py`.")
+        st.stop()
+
+    st.warning(
+        "**These are modelled numbers, not CAISO settlements.** The public bid files contain "
+        "**offers only** — no awards, no dispatch, no payments. Everything here is what a "
+        "textbook merit-order market *would* have paid these offers at the published prices. "
+        "It covers **energy alone**: no ancillary services, no capacity or resource-adequacy "
+        "payments, no bilateral hedges, no fuel costs. It is revenue, not profit, and it is an "
+        "estimate."
+    )
+
+    ec1, ec2 = st.columns([1, 1])
+    with ec1:
+        e_market_label = st.radio(
+            "Market",
+            ["Day-ahead (DAM)", "Real-time (RTM)"],
+            horizontal=True,
+            key="earn_market",
+            help="Day-ahead is where the bulk of energy is actually bought and sold. Real-time "
+            "bids are standing offers resubmitted every hour, so the real-time totals measure "
+            "availability rather than settled energy.",
+        )
+        e_market = "DAM" if e_market_label.startswith("Day-ahead") else "RTM"
+    with ec2:
+        e_hub = st.radio(
+            "Paid at which price?",
+            ["SYS", "NP15", "SP15", "ZP26"],
+            horizontal=True,
+            key="earn_hub",
+            format_func=lambda h: HUB_LABEL[h],
+            help="Bids carry no location, so no bidder can be matched to its own pricing node. "
+            "Everyone is settled at the same regional reference price; switch it to see how "
+            "much the answer depends on that choice.",
+        )
+
+    rev = load("bidder_revenue.parquet")
+    rev = rev[(rev["market"] == e_market) & (rev["hub"] == e_hub)].copy()
+    e_meta = META.get("earnings", {}).get(e_market.lower(), {})
+
+    if e_market == "RTM":
+        st.info(
+            "**Read the real-time totals as relative, not as dollars.** A real-time energy bid is "
+            "a standing offer of a resource's whole available capacity, resubmitted hour after "
+            f"hour — so this view 'sells' {e_meta.get('twh_sold', 0):,.0f} TWh against a "
+            "California grid that consumes roughly 230 TWh a year. Real time is a *balancing* "
+            "market: only the small difference from the day-ahead schedule is truly settled "
+            "there, and the bid files do not say what that difference was. The **ranking** is "
+            "still meaningful — it compares bidders on the same basis — but the totals are not "
+            "money anyone received. Use day-ahead for magnitudes."
+        )
+
+    with st.expander("How this estimate is built — in plain terms", expanded=False):
+        st.markdown("""
+CAISO publishes what generators **offered**, never what they were **paid**. So we reconstruct the payment the way the market itself works.
+
+**1 · Each offer is a curve, not a price.** A resource submits a series of (megawatt, price) points saying how much it will produce at each price level. CAISO dispatches *between* those points, so we do too — we find where the hour's price lands on the curve and read off the megawatts.
+
+**2 · It's a single clearing price for everyone.** Whoever clears is paid the market price for that hour, not the price they asked for. A plant that offered at \\$20 in a \\$60 hour is paid \\$60.
+
+**3 · Self-schedules always clear.** Some megawatts are submitted as a fixed "must-take" quantity with no price attached — nuclear and most wind and solar work this way. They take whatever the price turns out to be, including negative prices.
+
+**4 · Revenue = megawatts cleared × the hour's price**, added up over the year.
+
+##### A worked hour
+
+A resource offers this curve, and the price comes in at **\\$60/MWh**:
+
+| Megawatts | Asking price |
+|---|---|
+| 0 MW | \\$12 |
+| 120 MW | \\$45 |
+| 200 MW | \\$180 |
+
+\\$60 sits between the \\$45 and \\$180 points, about 19% of the way up, so the resource lands near **135 MW**. Add a **30 MW** self-schedule and it clears **165 MW**, paid at \\$60 → **\\$9,900** for that hour. It offered 230 MW in total, so it earned **\\$43/MWh offered** — above the market's own average because it showed up in an expensive hour and most of what it offered cleared.
+
+##### What it cannot see
+
+Real dispatch also respects transmission limits, unit commitment, minimum run times and — for batteries — state of charge. None of that is in the bid files, so this is a market-shaped approximation, not a settlement statement.
+""")
+
+    # ---------- headline numbers ----------
+    tot_rev = rev["revenue_gross"].sum()
+    tot_off = rev["mwh_offered"].sum()
+    tot_sold = rev["mwh_sold"].sum()
+    c = st.columns(4)
+    kpi(
+        c[0],
+        "Modelled energy revenue",
+        f"${tot_rev / 1e9:.2f}B",
+        f"across {rev['res'].nunique():,} bidders, {e_market} energy offers only",
+    )
+    kpi(
+        c[1],
+        "Energy sold",
+        f"{tot_sold / 1e6:.0f} TWh",
+        f"{tot_sold / tot_off * 100:.0f}% of the {tot_off / 1e6:.0f} TWh offered cleared"
+        if tot_off
+        else "",
+    )
+    kpi(
+        c[2],
+        "Realised price",
+        f"${tot_rev / tot_sold:.2f}" if tot_sold else "—",
+        "per MWh actually sold — compare with the market average below",
+    )
+    kpi(
+        c[3],
+        "Per MWh offered",
+        f"${tot_rev / tot_off:.2f}" if tot_off else "—",
+        "market-wide, counting every MWh offered whether it cleared or not",
+    )
+
+    # ---------- the ranking ----------
+    st.markdown("")
+    section(
+        "The ranking",
+        "Sorted by **dollars earned per megawatt-hour offered**. The filters matter: a resource "
+        "that offered for a handful of hours can post a spectacular rate on almost no volume, so "
+        "the defaults exclude the very small and the barely-present.",
+    )
+    f1, f2, f3 = st.columns([1, 1, 1])
+    min_mw = f1.slider(
+        "Minimum size (peak MW offered)",
+        0,
+        200,
+        10,
+        step=5,
+        help="Drop bidders whose largest single-hour offer is below this. Sub-megawatt "
+        "resources dominate the raw ranking on rounding alone.",
+    )
+    min_hrs = f2.slider(
+        "Minimum hours present",
+        0,
+        4000,
+        500,
+        step=100,
+        help="Drop bidders that offered in fewer hours than this. One lucky hour is not a "
+        "business model.",
+    )
+    top_n = f3.slider("How many to show", 10, 100, 25, step=5)
+
+    rk = rev[(rev["peak_mw_offered"] >= min_mw) & (rev["n_hours"] >= min_hrs)].copy()
+    rk["shortfall"] = rk["bench_lmp"] - rk["per_mwh_offered"]
+
+    if rk.empty:
+        st.info("No bidders match those filters. Loosen the minimum size or hours.")
+    else:
+        st.caption(
+            f"**{len(rk):,}** of {rev['res'].nunique():,} bidders clear the filters "
+            f"(≥{min_mw} MW, ≥{min_hrs:,} hours)."
+        )
+        show = rk.nlargest(top_n, "per_mwh_offered")[
+            [
+                "res",
+                "per_mwh_offered",
+                "bench_lmp",
+                "shortfall",
+                "clear_rate",
+                "revenue_gross",
+                "mwh_offered",
+                "peak_mw_offered",
+                "n_hours",
+            ]
+        ].rename(
+            columns={
+                "res": "Bidder",
+                "per_mwh_offered": "$/MWh offered",
+                "bench_lmp": "Market price in its hours",
+                "shortfall": "Lost to not clearing",
+                "clear_rate": "Cleared",
+                "revenue_gross": "Revenue",
+                "mwh_offered": "MWh offered",
+                "peak_mw_offered": "Peak MW",
+                "n_hours": "Hours",
+            }
+        )
+        st.dataframe(
+            show,
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "Bidder": st.column_config.NumberColumn(format="%d"),
+                "$/MWh offered": st.column_config.NumberColumn(format="$%.2f"),
+                "Market price in its hours": st.column_config.NumberColumn(format="$%.2f"),
+                "Lost to not clearing": st.column_config.NumberColumn(format="$%.2f"),
+                "Cleared": st.column_config.NumberColumn(format="%.1f%%"),
+                "Revenue": st.column_config.NumberColumn(format="$%.0f"),
+                "MWh offered": st.column_config.NumberColumn(format="%.0f"),
+                "Peak MW": st.column_config.NumberColumn(format="%.1f"),
+                "Hours": st.column_config.NumberColumn(format="%d"),
+            },
+        )
+
+        # ---------- the decomposition ----------
+        st.markdown("")
+        left, right = st.columns([3, 2])
+        with left:
+            section(
+                "Where the money actually comes from",
+                "Each dot is a bidder. Across is the **average market price during the hours it "
+                "chose to offer**; up is what it **actually earned per MWh offered**. Nothing can "
+                "sit above the diagonal — that would mean being paid more than the going price. "
+                "The drop below the line is the value of everything a bidder offered that "
+                "didn't clear.",
+            )
+            fig = go.Figure()
+            lo = float(min(rk["bench_lmp"].min(), rk["per_mwh_offered"].min()))
+            hi = float(max(rk["bench_lmp"].max(), rk["per_mwh_offered"].max()))
+            fig.add_trace(
+                go.Scatter(
+                    x=[lo, hi],
+                    y=[lo, hi],
+                    mode="lines",
+                    name="Everything offered clears",
+                    line=dict(color=MUTED, width=1.4, dash="dash"),
+                    hoverinfo="skip",
+                )
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=rk["bench_lmp"],
+                    y=rk["per_mwh_offered"],
+                    mode="markers",
+                    name="Bidder",
+                    marker=dict(
+                        size=8,
+                        color=rk["clear_rate"] * 100,
+                        colorscale=[[0, SEQ_BLUE[0]], [1, SEQ_BLUE[6]]],
+                        showscale=True,
+                        colorbar=dict(title=dict(text="% cleared", side="right"), thickness=12),
+                        line=dict(width=0.5, color="white"),
+                        opacity=0.85,
+                    ),
+                    customdata=rk[["res", "peak_mw_offered", "revenue_gross"]],
+                    hovertemplate=(
+                        "Bidder %{customdata[0]}<br>Market price in its hours: $%{x:.2f}"
+                        "<br>Earned per MWh offered: $%{y:.2f}"
+                        "<br>Peak %{customdata[1]:.0f} MW · $%{customdata[2]:,.0f}<extra></extra>"
+                    ),
+                )
+            )
+            style(
+                fig,
+                height=420,
+                ytitle="Earned per MWh offered ($)",
+                xtitle="Average market price during its offering hours ($/MWh)",
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        with right:
+            section("The takeaway", None)
+            best = rk.nlargest(1, "per_mwh_offered").iloc[0]
+            med_bench = rk["bench_lmp"].median()
+            med_short = rk["shortfall"].median()
+            st.markdown(
+                f"""
+Two things, and only two, decide what a bidder earns per megawatt offered:
+
+**1 · Which hours it shows up in.** That's the horizontal axis — the market price during its
+offering hours. A resource present only in expensive evening hours starts from a much higher
+base than one running flat all year. The median bidder here offers into
+**\\${med_bench:,.2f}/MWh** hours.
+
+**2 · How much of what it offers actually clears.** That's the drop below the diagonal, a median
+of **\\${med_short:,.2f}/MWh** — capacity priced out of the market.
+
+Notice what is *absent*: there's no third lever. Because every winner is paid the same clearing
+price, no bidder can be paid above the going rate for the hours it chose. Bidding cleverly
+cannot beat the diagonal — it can only avoid falling far below it.
+
+The top bidder here, **{int(best["res"])}**, earns **\\${best["per_mwh_offered"]:,.2f}/MWh
+offered** against a market price of **\\${best["bench_lmp"]:,.2f}** in its hours, clearing
+**{best["clear_rate"] * 100:.0f}%** of what it offered across {int(best["n_hours"]):,} hours.
+"""
+            )
+
+        # ---------- one bidder over the year ----------
+        st.markdown("")
+        section(
+            "One bidder, month by month",
+            "How a single bidder's earnings and clearing rate moved across 2025.",
+        )
+        pick = st.selectbox(
+            "Bidder",
+            show["Bidder"].tolist(),
+            format_func=lambda r: f"Bidder {r}",
+            help="The bidders in the ranking above, in the same order.",
+        )
+        if have("bidder_revenue_monthly.parquet"):
+            bm = load("bidder_revenue_monthly.parquet")
+            bm = bm[(bm["market"] == e_market) & (bm["hub"] == e_hub) & (bm["res"] == pick)].copy()
+            bm["month"] = pd.to_datetime(bm["month"])
+            bm = bm.sort_values("month")
+            bm["per_mwh_offered"] = bm["revenue_gross"] / bm["mwh_offered"].replace(0, pd.NA)
+            fig3 = make_subplots(specs=[[{"secondary_y": True}]])
+            fig3.add_trace(
+                go.Bar(
+                    x=bm["month"],
+                    y=bm["revenue_gross"] / 1e6,
+                    name="Revenue",
+                    marker_color=SEQ_BLUE[3],
+                    hovertemplate="%{x|%b %Y}<br>Revenue: $%{y:.2f}M<extra></extra>",
+                ),
+                secondary_y=False,
+            )
+            fig3.add_trace(
+                go.Scatter(
+                    x=bm["month"],
+                    y=bm["per_mwh_offered"],
+                    mode="lines+markers",
+                    name="Earned per MWh offered",
+                    line=dict(color=ORANGE, width=2),
+                    hovertemplate="%{x|%b %Y}<br>$%{y:.2f} per MWh offered<extra></extra>",
+                ),
+                secondary_y=True,
+            )
+            style(fig3, height=320)
+            fig3.update_yaxes(title_text="Revenue ($M)", secondary_y=False)
+            fig3.update_yaxes(
+                title_text="$ per MWh offered",
+                secondary_y=True,
+                showgrid=False,
+                color=MUTED,
+                title_font=dict(size=12),
+            )
+            st.plotly_chart(fig3, use_container_width=True)
+
+    # ---------- storage diagnostic ----------
+    chg = rev[rev["mwh_bought"] > 0]
+    if len(chg):
+        st.markdown("")
+        section(
+            "Bidders that also buy power",
+            f"{len(chg):,} bidders submit a **negative** leg on their offer curve — they pay to "
+            "take power in, which is how batteries and pumped storage charge.",
+        )
+        st.error(
+            "**This section is a diagnostic, and it overstates buying.** What actually stops a "
+            "battery charging in every cheap hour is its **state of charge** — it cannot buy what "
+            "it has no room to store. CAISO's optimiser enforces that across the whole day; a "
+            "model that looks at each hour on its own cannot. These bidders come out buying about "
+            f"{chg['mwh_bought'].sum() / max(chg['mwh_sold'].sum(), 1):.1f} MWh for every MWh "
+            "they sell, where a real battery is nearer 1.15. Treat the purchase column as "
+            "'this bidder charges', not as a quantity. **Nothing in the ranking above uses it.**"
+        )
+        st.dataframe(
+            chg.nlargest(15, "mwh_bought")[
+                ["res", "peak_mw_offered", "mwh_sold", "revenue_gross", "mwh_bought", "charge_cost"]
+            ].rename(
+                columns={
+                    "res": "Bidder",
+                    "peak_mw_offered": "Peak MW",
+                    "mwh_sold": "MWh sold",
+                    "revenue_gross": "Revenue from sales",
+                    "mwh_bought": "MWh bought (overstated)",
+                    "charge_cost": "Cost of buying (overstated)",
+                }
+            ),
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "Bidder": st.column_config.NumberColumn(format="%d"),
+                "Peak MW": st.column_config.NumberColumn(format="%.1f"),
+                "MWh sold": st.column_config.NumberColumn(format="%.0f"),
+                "Revenue from sales": st.column_config.NumberColumn(format="$%.0f"),
+                "MWh bought (overstated)": st.column_config.NumberColumn(format="%.0f"),
+                "Cost of buying (overstated)": st.column_config.NumberColumn(format="$%.0f"),
+            },
+        )
+
+    # ---------- how much the price choice matters ----------
+    st.markdown("")
+    all_hubs = load("bidder_revenue.parquet")
+    all_hubs = all_hubs[all_hubs["market"] == e_market]
+    hub_tot = (
+        all_hubs.groupby("hub")
+        .apply(
+            lambda g: pd.Series(
+                {
+                    "revenue": g["revenue_gross"].sum(),
+                    "per_mwh": g["revenue_gross"].sum() / max(g["mwh_offered"].sum(), 1),
+                }
+            ),
+            include_groups=False,
+        )
+        .reset_index()
+    )
+    spread = hub_tot["per_mwh"].max() - hub_tot["per_mwh"].min()
+    section(
+        "How much does the price choice change the answer?",
+        f"Bids carry no location, so every bidder is settled at the same reference price. "
+        f"Swapping which one moves the market-wide figure by **\\${spread:.2f}/MWh offered** — "
+        f"about {spread / max(hub_tot['per_mwh'].mean(), 0.01) * 100:.0f}% of the level. "
+        "Rankings are far more stable than totals, because the same price applies to everyone.",
+    )
+    fig4 = go.Figure(
+        go.Bar(
+            x=[HUB_LABEL[h] for h in hub_tot["hub"]],
+            y=hub_tot["per_mwh"],
+            marker_color=[HUB_COLOR.get(h, BLUE) for h in hub_tot["hub"]],
+            hovertemplate="%{x}<br>$%{y:.2f} per MWh offered<extra></extra>",
+        )
+    )
+    style(fig4, height=260, legend=False, ytitle="$ per MWh offered (all bidders)")
+    st.plotly_chart(fig4, use_container_width=True)
+
+    st.download_button(
+        "⬇ Download bidder earnings (CSV)",
+        rev.to_csv(index=False),
+        f"caiso_bidder_earnings_{e_market.lower()}_{e_hub.lower()}_2025.csv",
+        "text/csv",
+    )
+    show_data_dict("earnings", "bidder earnings")
 
 # =====================================================================
 # PAGE 2 — ECONOMIC WITHHOLDING
@@ -2797,6 +3252,20 @@ else:
 > **Outages** — the {int((1 - t["tight_percentile"]) * 100)}% of hours with the most capacity on a **forced (unplanned)** outage (≥ {t["tight_mw"]:,.0f} MW); scheduled maintenance is excluded. Needs no price data.
 > **Day-ahead prices** — the {int((1 - t.get("price_tight_percentile", 0.9)) * 100)}% of hours with the highest day-ahead system price (≥ \\${t.get("price_tight_lmp", 0):.0f}/MWh). The market's own scarcity signal.
 > **Real-time prices** — the {int((1 - t.get("price_tight_percentile", 0.9)) * 100)}% of hours whose *average* 5-minute real-time system price was highest (≥ \\${t.get("price_tight_lmp_rtm", 0):.0f}/MWh). Because it is an hourly average, one 5-minute spike inside an otherwise cheap hour does not by itself mark the hour short.
+""")
+
+    _em = META.get("earnings", {})
+    if _em:
+        _dam, _rtm = _em.get("dam", {}), _em.get("rtm", {})
+        st.markdown(f"""
+**7 · Estimated earnings (Earnings panel).** The one number in this tool that is **modelled rather than measured**. CAISO's public bid files carry offers only — no awards, no dispatch, no payments — so there is no way to *read* what a resource earned. Instead we replay the market's own rule: each offer curve is a monotone (megawatt, price) schedule that CAISO dispatches *between*, so we interpolate to find where the hour's price lands on it, add any self-scheduled megawatts (must-take, so they clear at any price), and value the result at that hour's price. Summed over the year that gives **\\${_dam.get("revenue_bn", 0):.2f}B** across {_dam.get("n_bidders", 0):,} day-ahead bidders on {_dam.get("twh_sold", 0):,.0f} TWh sold, a realised **\\${_dam.get("realised_per_mwh", 0):.2f}/MWh** against a system average LMP of \\${META.get("price", {}).get("avg_sys_lmp", 0):.2f}/MWh.
+
+Four limits worth holding onto, in rough order of how much they matter:
+
+> **Energy only.** No ancillary services, no capacity or resource-adequacy payments, no bilateral hedges or congestion revenue rights, no tax credits, and no fuel costs. Many resources earn much of their living outside the energy market, so this is neither total revenue nor profit.
+> **No location.** Bids carry no node, and only 223 of the {META.get("n_resources", 0):,} catalogued plants — about 32% of megawatts — could be matched to a pricing node even in principle. So every bidder is settled at a regional reference price. The panel lets you switch between the system average and the three hubs; the market-wide level moves by a few dollars per MWh, while the ranking barely moves, because the same price applies to everyone.
+> **No commitment, no state of charge.** Real dispatch respects transmission limits, minimum run times, unit commitment and — for storage — how full the battery already is. None of that is in the bid files. Where a thermal unit's curve starts above zero we credit it nothing rather than inventing minimum-load generation it never produced, and storage charging is reported only as a flagged diagnostic, never in a ranking.
+> **Real-time totals are not dollars.** A real-time energy bid is a standing offer of a resource's whole capacity, resubmitted hourly, so that view "sells" {_rtm.get("twh_sold", 0):,.0f} TWh against a grid that consumes roughly 230 TWh a year. Real time settles only the *difference* from the day-ahead schedule, and the bid files do not say what that difference was. Compare bidders there; take magnitudes from day-ahead.
 """)
 
     section("Key assumptions & caveats")

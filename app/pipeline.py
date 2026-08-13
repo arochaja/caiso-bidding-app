@@ -43,7 +43,6 @@ RTM_LMP = [
     os.path.join(DATA, "2025-RTM-LMP", "RTM_2025-*.parquet"),
     os.path.join(DATA, "2025-RTM-LMP", "december parts", "*.parquet"),
 ]
-
 # the two bid markets scored side by side; RTM is the default/primary market.
 MARKETS = {"RTM": BIDS, "DAM": DAMB}
 
@@ -614,6 +613,298 @@ log(
     f"  day-ahead demand: avg {demand_stats[0]:,.0f} MW, peak {demand_stats[1]:,.0f} MW, "
     f"{demand_stats[2]}% must-take (self-scheduled)"
 )
+
+# =====================================================================
+# Stage 2c: ESTIMATED ENERGY REVENUE per bidder (the "Earnings" panel)
+#
+#   CAISO's public bid files contain OFFERS ONLY — no awards, no dispatch, no
+#   settlement. So revenue here is MODELLED, not observed, by the textbook
+#   merit-order rule: a resource is dispatched to the point on its own offer
+#   curve where the curve price meets the market clearing price, and every MWh
+#   is paid that same clearing price (uniform-price auction).
+#
+#   THE OFFER CURVE IS ONE CONTINUOUS PIECEWISE-LINEAR SCHEDULE, NOT A LIST OF
+#   SUPPLY BLOCKS. SCH_BID_XAXISDATA is net output in MW, SCH_BID_Y1AXISDATA the
+#   price, and the pairs are BREAKPOINTS of a monotone curve that CAISO dispatches
+#   BETWEEN. For storage the curve crosses zero into negative x — the resource
+#   buying power to charge. A real 200 MW battery, hour ending 19:00:
+#       x = -200  y = -150     <- charge 200 MW, but only if PAID $150/MWh to take it
+#       x =    0  y =   35     <- idle
+#       x =  100  y =   40
+#       x =  150  y =   42.50
+#       x =  200  y =   55     <- discharge 200 MW above $55
+#   Reading that as steps — "the largest x whose y is at or below the price" —
+#   returns x = -200 at ANY price under $35, i.e. the battery charges flat out in
+#   most hours of the year. That is what an earlier build of this stage did, and it
+#   produced a battery that bought 1,288 GWh and sold 2 GWh. INTERPOLATION is the
+#   correct reading: at $30 the operating point sits on the -200 -> 0 segment at
+#   about -5 MW, i.e. essentially idle; at $50 it sits between the 150 MW and
+#   200 MW breakpoints. So we locate the bracketing breakpoints A (last at or below
+#   the price) and B (first above it) and interpolate linearly between them.
+#
+#   Two edge cases, both handled in `settle` below:
+#     * price ABOVE the whole curve  -> the resource is at its top, max(x).
+#     * price BELOW the whole curve  -> it is at its floor, but the floor means
+#       different things by sign. A negative floor is a battery that wants to charge
+#       hard when power is cheap, so we take it. A POSITIVE floor is a thermal
+#       unit's minimum load (383k resource-hours, averaging 69 MW at a curve-minimum
+#       price of ~$122), which only applies if the unit was committed — and unit
+#       commitment is not in this data. Crediting it would invent generation that a
+#       unit priced out of the market never produced, so a positive floor is taken
+#       as 0. `least(x_min, 0)` expresses exactly that.
+#
+#   Do NOT filter to x > 0 here the way Stage 0 does — Stage 0 measures PRICED
+#   SUPPLY OFFERED, which is a different quantity from net settled position.
+#   198 of 1,960 day-ahead generators bid a negative (charging) leg.
+#
+#   STORAGE CHARGING IS DELIBERATELY NOT IN THE HEADLINE. A battery's charge and
+#   discharge legs share one curve, but what actually stops it charging in every
+#   cheap hour is its STATE OF CHARGE — it cannot buy what it has no room to store.
+#   The bid files carry the state-of-charge bounds (MINEOHSTATEOFCHARGE /
+#   MAXEOHSTATEOFCHARGE) and CAISO's optimiser enforces them across the whole day;
+#   a resource-hour model like this one cannot, so it lets batteries charge far more
+#   than they physically could — currently ~2 MWh bought per MWh sold, against a
+#   real round-trip figure nearer 1.15. So `mwh_bought` / `charge_cost` /
+#   `revenue_net` are computed and kept, but as a clearly-flagged storage
+#   DIAGNOSTIC. Everything the panel ranks on uses `revenue_gross`: money received
+#   for energy sold, which is what "what does this resource get paid" means.
+#
+#   SELF-SCHEDULES ARE PRICE-TAKERS: SELFSCHEDMW clears at any price, so it is
+#   added to the cleared quantity unconditionally. It is what makes nuclear and
+#   most renewables look the way they do here.
+#
+#   HOUR KEY: same trap as Stage 2b. STARTTIME on a self-scheduled row is the
+#   24-hour ENVELOPE (00:00 -> next-day 00:00) — verified: 100% of generator
+#   self-schedule rows carry hour 00 — and the real hour is in TIMEINTERVALSTART.
+#   Economic curve rows carry theirs in SCH_BID_TIMEINTERVALSTART and leave
+#   TIMEINTERVALSTART null. Keying on STARTTIME would settle every self-scheduled
+#   MW at midnight's price, which is the cheapest hour of the day.
+#
+#   PRICE: the bid files carry NO location, so a bidder cannot be mapped to its
+#   own pricing node (only 223 of 1,396 catalogued plants — 32% of MW — even
+#   match a node by name, and only for plants Screen 2 re-identified). Every
+#   bidder is therefore settled at a REGIONAL reference price, computed for all
+#   four series (SYS mean + the three hubs) so the dashboard can show how much
+#   the answer moves with that choice. Each market settles at its own prices:
+#   day-ahead bids at the day-ahead LMP, real-time bids at the real-time LMP.
+# =====================================================================
+log("Stage 2c: estimated energy revenue per bidder...")
+for market, path in MARKETS.items():
+    # Full offer curve, both legs. `y is not null` drops the handful of malformed steps;
+    # x is deliberately unconstrained in sign (see the storage note above).
+    con.execute(f"""
+    create or replace table rev_steps as
+    select RESOURCEBID_SEQ                                                        as res,
+           cast(coalesce(TIMEINTERVALSTART, SCH_BID_TIMEINTERVALSTART) as timestamp) as h,
+           SCH_BID_XAXISDATA                                                      as x,
+           SCH_BID_Y1AXISDATA                                                     as y
+    from read_parquet('{path}')
+    where MARKETPRODUCTTYPE='EN' and RESOURCE_TYPE='GENERATOR'
+      and SCH_BID_XAXISDATA is not null and SCH_BID_Y1AXISDATA is not null
+      and coalesce(TIMEINTERVALSTART, SCH_BID_TIMEINTERVALSTART) is not null
+    """)
+    # Self-scheduled (must-take) MW at TRUE hourly grain. Sign is left alone: a negative
+    # self-schedule is a fixed charging obligation, and there are ~1.5k such rows.
+    con.execute(f"""
+    create or replace table rev_ss as
+    select RESOURCEBID_SEQ                        as res,
+           cast(TIMEINTERVALSTART as timestamp)   as h,
+           max(SELFSCHEDMW)                       as ss_mw
+    from read_parquet('{path}')
+    where MARKETPRODUCTTYPE='EN' and RESOURCE_TYPE='GENERATOR'
+      and SELFSCHEDMW is not null and SELFSCHEDMW <> 0
+      and TIMEINTERVALSTART is not null
+    group by 1, 2
+    """)
+    # Settle each resource-hour against all four price series, then roll straight up to
+    # month grain. The per-hour x hub product is ~18M rows for day-ahead and is never
+    # materialised — DuckDB streams it into the aggregation.
+    con.execute(f"""
+    create or replace table rev_month_{market} as
+    with p as (
+      select h, hub, lmp from price_hourly_out where market='{market}' and lmp is not null
+    ),
+    -- Bracket the hour's price between two curve breakpoints. Because the curve is
+    -- monotone, "the breakpoint just below the price" is simply the max over the
+    -- steps at or below it, and "just above" the min over the rest — so the whole
+    -- lookup is four filtered aggregates and needs no range join.
+    bracket as (
+      select s.res, s.h, p.hub, p.lmp,
+             max(s.x)                                     as x_max,
+             min(s.x)                                     as x_min,
+             max(s.x) filter (where s.y <= p.lmp)         as x_lo,
+             max(s.y) filter (where s.y <= p.lmp)         as y_lo,
+             min(s.x) filter (where s.y >  p.lmp)         as x_hi,
+             min(s.y) filter (where s.y >  p.lmp)         as y_hi
+      from rev_steps s join p on p.h = s.h
+      group by 1, 2, 3, 4
+    ),
+    sh as (
+      select res, h, hub, lmp,
+             greatest(x_max, 0) as offer_top_mw,
+             case
+               when x_lo is null then least(x_min, 0)   -- price under the curve (see note)
+               when x_hi is null then x_max             -- price over the curve: wide open
+               -- y_hi > lmp >= y_lo, so the denominator is strictly positive
+               else x_lo + (lmp - y_lo) / (y_hi - y_lo) * (x_hi - x_lo)
+             end                as curve_cleared_mw
+      from bracket
+    ),
+    ssh as (
+      select z.res, z.h, p.hub, p.lmp, z.ss_mw from rev_ss z join p on p.h = z.h
+    ),
+    comb as (
+      select coalesce(sh.res, ssh.res)          as res,
+             coalesce(sh.h,   ssh.h)            as h,
+             coalesce(sh.hub, ssh.hub)          as hub,
+             coalesce(sh.lmp, ssh.lmp)          as lmp,
+             coalesce(sh.offer_top_mw, 0)       as offer_top_mw,
+             coalesce(sh.curve_cleared_mw, 0)   as curve_cleared_mw,
+             coalesce(ssh.ss_mw, 0)             as ss_mw
+      from sh full outer join ssh
+        on sh.res = ssh.res and sh.h = ssh.h and sh.hub = ssh.hub
+    ),
+    settled as (
+      select res, hub, h, lmp,
+             -- what the resource put on the table as SUPPLY (the ranking denominator)
+             offer_top_mw + greatest(ss_mw, 0)         as offered_mw,
+             -- net settled position: positive = selling, negative = buying to charge
+             curve_cleared_mw + ss_mw                  as net_mw
+      from comb
+    )
+    select '{market}'                                       as market,
+           hub,
+           res,
+           date_trunc('month', h)::date                     as month,
+           count(*)                                         as n_hours,
+           sum(offered_mw)                                  as mwh_offered,
+           sum(greatest(net_mw, 0))                         as mwh_sold,
+           sum(greatest(-net_mw, 0))                        as mwh_bought,
+           sum(greatest(net_mw, 0) * lmp)                    as revenue_gross,
+           sum(greatest(-net_mw, 0) * lmp)                   as charge_cost,
+           sum(net_mw * lmp)                                as revenue_net,
+           max(offered_mw)                                  as peak_mw_offered,
+           -- offer-weighted market price: what this bidder would have earned per MWh
+           -- offered had every offered MW cleared at the going price. The benchmark
+           -- that separates "showed up in expensive hours" from "cleared well".
+           sum(lmp * offered_mw)                            as lmp_x_offered
+    from settled
+    where offered_mw > 0 or net_mw <> 0
+    group by 1, 2, 3, 4
+    """)
+    _n = con.execute(f"select count(*) from rev_month_{market}").fetchone()[0]
+    log(f"  {market}: {_n:,} bidder x hub x month revenue rows")
+
+con.execute(f"""
+copy (
+  {" union all ".join(f"select * from rev_month_{m}" for m in MARKETS)}
+  order by market, hub, res, month
+) to '{OUT}/bidder_revenue_monthly.parquet' (format parquet)
+""")
+# Annual roll-up, with the ratios the panel ranks on precomputed.
+con.execute(f"""
+copy (
+  select market, hub, res,
+         sum(n_hours)                                        as n_hours,
+         sum(mwh_offered)                                     as mwh_offered,
+         sum(mwh_sold)                                        as mwh_sold,
+         sum(mwh_bought)                                      as mwh_bought,
+         sum(revenue_gross)                                   as revenue_gross,
+         sum(charge_cost)                                     as charge_cost,
+         sum(revenue_net)                                     as revenue_net,
+         max(peak_mw_offered)                                 as peak_mw_offered,
+         -- HEADLINE: money received per MWh of supply offered. Gross, not net —
+         -- storage charging is a diagnostic, not part of the ranking (see Stage 2c).
+         sum(revenue_gross) / nullif(sum(mwh_offered), 0)     as per_mwh_offered,
+         -- realised price on the MWh that actually sold
+         sum(revenue_gross) / nullif(sum(mwh_sold), 0)        as per_mwh_sold,
+         -- the benchmark: offer-weighted average market price
+         sum(lmp_x_offered) / nullif(sum(mwh_offered), 0)     as bench_lmp,
+         -- share of offered MWh that cleared
+         sum(mwh_sold) / nullif(sum(mwh_offered), 0)          as clear_rate,
+         -- annualised return on the largest block ever offered
+         sum(revenue_gross) / nullif(max(peak_mw_offered), 0) as per_mw_year
+  from read_parquet('{OUT}/bidder_revenue_monthly.parquet')
+  group by market, hub, res
+  order by market, hub, res
+) to '{OUT}/bidder_revenue.parquet' (format parquet)
+""")
+
+# --- build assertions: a modelled money number is easy to get silently wrong ----------
+# 1. Self-schedules must NOT be piled into hour 00 (the STARTTIME-envelope trap).
+_h0_share = con.execute(f"""
+  select sum(case when extract(hour from h)=0 then mwh_sold else 0 end) / nullif(sum(mwh_sold),0)
+  from (select h, sum(greatest(net_mw,0)) as mwh_sold from (
+     select cast(TIMEINTERVALSTART as timestamp) as h, max(SELFSCHEDMW) as net_mw
+     from read_parquet('{DAMB}')
+     where MARKETPRODUCTTYPE='EN' and RESOURCE_TYPE='GENERATOR' and SELFSCHEDMW > 0
+       and TIMEINTERVALSTART is not null
+     group by 1, RESOURCEBID_SEQ) t group by h)
+""").fetchone()[0]
+if _h0_share is None or _h0_share > 0.12:
+    raise SystemExit(
+        f"{_h0_share:.0%} of self-scheduled MWh landed in hour 00 — expected ~1/24. "
+        "The bid hour key has regressed to STARTTIME (a 24-hour envelope on "
+        "self-scheduled rows); use TIMEINTERVALSTART. See Stage 2b/2c."
+    )
+_rev_stats = con.execute(f"""
+  select sum(revenue_gross)/1e9, sum(mwh_sold)/1e6, sum(revenue_gross)/nullif(sum(mwh_sold),0),
+         count(distinct res)
+  from read_parquet('{OUT}/bidder_revenue.parquet') where market='DAM' and hub='SYS'
+""").fetchone()
+# 2. The modelled realised price must land near the system average LMP. Wildly off means
+#    the bid and price series have drifted out of alignment (timezone, hour key, sign).
+_sys_avg = con.execute("select avg(sys_price) from sysprice").fetchone()[0]
+if not (0.5 * _sys_avg <= _rev_stats[2] <= 2.0 * _sys_avg):
+    raise SystemExit(
+        f"modelled day-ahead realised price ${_rev_stats[2]:.2f}/MWh is not within 2x of the "
+        f"system average LMP ${_sys_avg:.2f}/MWh — check the Stage 2c clearing logic."
+    )
+# 3. Guard the curve reading itself. Reading the bid curve as STEPS instead of
+#    interpolating it parks every battery on its charging leg in every cheap hour: that
+#    build had charging resources buying 644x more energy than they sold. Interpolated,
+#    the ratio is ~2 — still above the ~1.15 that round-trip efficiency implies, because
+#    no resource-hour model can enforce state of charge, which is exactly why the
+#    charging leg stays out of the headline. The bound separates the two regimes.
+_ratio = con.execute(f"""
+  select sum(mwh_bought) / nullif(sum(mwh_sold), 0)
+  from read_parquet('{OUT}/bidder_revenue.parquet')
+  where market='DAM' and hub='SYS' and mwh_bought > 0
+""").fetchone()[0]
+if _ratio is not None and _ratio > 5.0:
+    raise SystemExit(
+        f"charging resources buy {_ratio:.1f}x more energy than they sell — the offer "
+        "curve is being read as steps instead of interpolated. See Stage 2c."
+    )
+log(f"  check: charging resources buy {_ratio:.2f} MWh per MWh sold (storage diagnostic only)")
+log(
+    f"  day-ahead: ${_rev_stats[0]:.2f}B modelled energy revenue across {_rev_stats[3]:,} "
+    f"bidders, {_rev_stats[1]:,.0f} TWh sold at ${_rev_stats[2]:.2f}/MWh realised "
+    f"(system average LMP ${_sys_avg:.2f}/MWh)"
+)
+log(f"  check: {_h0_share:.1%} of self-scheduled MWh in hour 00 (flat would be 4.2%)")
+
+# headline figures for the Earnings panel, per market, at the SYS reference price
+earn_meta = {}
+for market in MARKETS:
+    _e = con.execute(f"""
+      select count(distinct res), sum(revenue_gross)/1e9, sum(mwh_sold)/1e6,
+             sum(revenue_gross)/nullif(sum(mwh_sold),0),
+             sum(revenue_gross)/nullif(sum(mwh_offered),0),
+             sum(mwh_sold)/nullif(sum(mwh_offered),0),
+             sum(case when mwh_bought > 0 then 1 else 0 end)
+      from read_parquet('{OUT}/bidder_revenue.parquet')
+      where market='{market}' and hub='SYS'
+    """).fetchone()
+    earn_meta[market.lower()] = dict(
+        n_bidders=int(_e[0]),
+        revenue_bn=round(float(_e[1]), 2),
+        twh_sold=round(float(_e[2]), 1),
+        realised_per_mwh=round(float(_e[3]), 2),
+        per_mwh_offered=round(float(_e[4]), 2),
+        clear_rate_pct=round(float(_e[5]) * 100, 1),
+        n_with_charging=int(_e[6]),
+    )
 
 # =====================================================================
 # Stage 3: ECONOMIC-WITHHOLDING screen
@@ -1864,6 +2155,7 @@ meta = dict(
         dam_peak_mw=float(demand_stats[1]),
         dam_musttake_share_pct=float(demand_stats[2]),
     ),
+    earnings=earn_meta,
     reident_candidate_bidders=int(mdf_forced["res"].nunique()) if len(mdf_forced) else 0,
     reident_candidate_bidders_combined=int(mdf_combined["res"].nunique())
     if len(mdf_combined)
@@ -1885,6 +2177,8 @@ meta = dict(
         "Outages come from CAISO's daily 'prior trade date' reports. A row with no end time means the outage was still ongoing as of that report's trade date, so we treat it as active through that date — not a one-hour blip. Outages that began before 2025 but were still active are clipped into the 2025 window, and the same ongoing outage re-listed across many daily reports is collapsed so it is counted once. CAISO also files one physical curtailment as many overlapping records — split across sub-intervals and re-issued under different outage IDs, each carrying the same megawatts — so for each hour we count only a plant's DEEPEST curtailment and then add across plants. Adding the records up instead would invent capacity that was never offline, most of all in November and December 2025.",
         "Each offer is a set of (amount, price) steps with prices that only go up; a plant's 'capacity' is the largest amount it offered.",
         "Unmasking (Screen 2) matches a bidder's quiet days against a plant's outage days (three methods: forced, forced+planned, magnitude-aware). Each match is cross-checked against the DAY-AHEAD offers: if the bidder also goes quiet in DAM on the plant's outage days, that is a second, market-independent line of evidence.",
+        "Convergence ('virtual') bids are shown as BIDS SUBMITTED, never as positions cleared. CAISO publishes the bid curves but not the awards, so the panel can say how much virtual supply and demand was offered into each hour and which way the layer leaned — it cannot say how much of it CAISO accepted, and the megawatt-hour figures are therefore offered volume, not settled volume. The trader and the node are both pseudonymised in the source file, so a virtual bid can never be attributed to a company and never settled at its own node price; the day-ahead-minus-real-time gap it is compared against is the SYSTEM price across the three trading hubs. One more consequence of having bids but not awards: the panel reports the direction the money leaned and whether that direction matched the gap that followed, not anyone's profit or loss.",
+        "Earnings are MODELLED, not observed. CAISO's public bid files contain offers only — no awards, no dispatch, no settlement — so the panel dispatches each offer curve against the hour's market price by the textbook merit-order rule (a resource produces up to the point where its own offer price meets the clearing price, and is paid that clearing price for every megawatt-hour), then adds self-scheduled megawatts, which are price-takers and clear at any price. Because bids carry no location, every bidder is settled at a regional reference price rather than its own node, and the panel lets you switch between the system average and each of the three trading hubs to see how much that choice moves the answer. The result covers ENERGY only: it excludes ancillary services, capacity and resource-adequacy payments, bilateral hedges, congestion revenue rights, tax credits and fuel costs, so it is not profit and not a full revenue picture.",
     ],
 )
 with open(f"{OUT}/meta.json", "w") as f:
