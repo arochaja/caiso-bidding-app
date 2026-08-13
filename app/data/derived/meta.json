@@ -220,6 +220,46 @@
       ]
     },
     {
+      "key": "virtual_bids",
+      "name": "Convergence (virtual) bids",
+      "file": "convergence_bids_2025/<trade date>/*_PB_CB_PUBLIC_BIDS_N_v1.csv.gz",
+      "what": "Purely financial bets on the gap between the day-ahead and real-time price. No power plant stands behind them: the trader sells day-ahead energy it will never generate (virtual supply) or buys energy it will never consume (virtual demand), and settles the difference. Both the trader and the location arrive pseudonymised, so this file can never be joined to a named company, a plant or a node \u2014 it powers the Virtual bids panel only.",
+      "stats": [
+        [
+          "Rows (individual curve breakpoints)",
+          "~70 million"
+        ],
+        [
+          "Bid curves (trader \u00d7 node \u00d7 hour \u00d7 side)",
+          "31,370,941"
+        ],
+        [
+          "Distinct pseudonymous traders",
+          "164"
+        ],
+        [
+          "Distinct pseudonymous nodes",
+          "3,519"
+        ],
+        [
+          "Virtual supply bid (hourly average)",
+          "12,159 MW"
+        ],
+        [
+          "Virtual demand bid (hourly average)",
+          "7,564 MW"
+        ],
+        [
+          "Bid at the price floor/cap (price-takers)",
+          "2.3% of MW"
+        ],
+        [
+          "Days covered",
+          "364 (2025-07-01 published empty)"
+        ]
+      ]
+    },
+    {
       "key": "cec_plants",
       "name": "California power plants (CEC)",
       "file": "powerplants.csv",
@@ -305,6 +345,47 @@
     "dam_peak_mw": 58026.0,
     "dam_musttake_share_pct": 70.6
   },
+  "virtual": {
+    "n_traders": 164,
+    "n_nodes": 3519,
+    "n_curves": 31370941,
+    "n_days": 364,
+    "n_hours": 8735,
+    "supply_mwh": 106211634.02235869,
+    "demand_mwh": 66067420.14697875,
+    "supply_avg_mw": 12159.317003132077,
+    "demand_avg_mw": 7563.528351113767,
+    "pricetaker_share_pct": 2.3189414344434254,
+    "top5_share_pct": 30.21580065028255,
+    "top10_share_pct": 44.72155448116075,
+    "conv_hours": 8709,
+    "conv_corr": 0.12850514425197335,
+    "conv_hit_rate_pct": 60.14467791939373,
+    "conv_avg_net_mw": 4596.616815407045,
+    "conv_avg_spread": 0.9315223015462899,
+    "price_floor": -150.0,
+    "price_cap": 1000.0
+  },
+  "earnings": {
+    "rtm": {
+      "n_bidders": 2497,
+      "revenue_bn": 27.76,
+      "twh_sold": 736.2,
+      "realised_per_mwh": 37.71,
+      "per_mwh_offered": 23.07,
+      "clear_rate_pct": 61.2,
+      "n_with_charging": 247
+    },
+    "dam": {
+      "n_bidders": 1959,
+      "revenue_bn": 4.42,
+      "twh_sold": 136.2,
+      "realised_per_mwh": 32.45,
+      "per_mwh_offered": 19.54,
+      "clear_rate_pct": 60.2,
+      "n_with_charging": 199
+    }
+  },
   "reident_candidate_bidders": 284,
   "reident_candidate_bidders_combined": 312,
   "reident_candidate_bidders_magnitude": 429,
@@ -321,6 +402,8 @@
     "There's no fuel-cost data, so 'holding back power' is still judged by comparing each plant to its own behavior in short vs. normal hours \u2014 the clearing price sharpens the 'high offer' threshold but does not prove intent.",
     "Outages come from CAISO's daily 'prior trade date' reports. A row with no end time means the outage was still ongoing as of that report's trade date, so we treat it as active through that date \u2014 not a one-hour blip. Outages that began before 2025 but were still active are clipped into the 2025 window, and the same ongoing outage re-listed across many daily reports is collapsed so it is counted once. CAISO also files one physical curtailment as many overlapping records \u2014 split across sub-intervals and re-issued under different outage IDs, each carrying the same megawatts \u2014 so for each hour we count only a plant's DEEPEST curtailment and then add across plants. Adding the records up instead would invent capacity that was never offline, most of all in November and December 2025.",
     "Each offer is a set of (amount, price) steps with prices that only go up; a plant's 'capacity' is the largest amount it offered.",
-    "Unmasking (Screen 2) matches a bidder's quiet days against a plant's outage days (three methods: forced, forced+planned, magnitude-aware). Each match is cross-checked against the DAY-AHEAD offers: if the bidder also goes quiet in DAM on the plant's outage days, that is a second, market-independent line of evidence."
+    "Unmasking (Screen 2) matches a bidder's quiet days against a plant's outage days (three methods: forced, forced+planned, magnitude-aware). Each match is cross-checked against the DAY-AHEAD offers: if the bidder also goes quiet in DAM on the plant's outage days, that is a second, market-independent line of evidence.",
+    "Convergence ('virtual') bids are shown as BIDS SUBMITTED, never as positions cleared. CAISO publishes the bid curves but not the awards, so the panel can say how much virtual supply and demand was offered into each hour and which way the layer leaned \u2014 it cannot say how much of it CAISO accepted, and the megawatt-hour figures are therefore offered volume, not settled volume. The trader and the node are both pseudonymised in the source file, so a virtual bid can never be attributed to a company and never settled at its own node price; the day-ahead-minus-real-time gap it is compared against is the SYSTEM price across the three trading hubs. One more consequence of having bids but not awards: the panel reports the direction the money leaned and whether that direction matched the gap that followed, not anyone's profit or loss.",
+    "Earnings are MODELLED, not observed. CAISO's public bid files contain offers only \u2014 no awards, no dispatch, no settlement \u2014 so the panel dispatches each offer curve against the hour's market price by the textbook merit-order rule (a resource produces up to the point where its own offer price meets the clearing price, and is paid that clearing price for every megawatt-hour), then adds self-scheduled megawatts, which are price-takers and clear at any price. Because bids carry no location, every bidder is settled at a regional reference price rather than its own node, and the panel lets you switch between the system average and each of the three trading hubs to see how much that choice moves the answer. The result covers ENERGY only: it excludes ancillary services, capacity and resource-adequacy payments, bilateral hedges, congestion revenue rights, tax credits and fuel costs, so it is not profit and not a full revenue picture."
   ]
 }

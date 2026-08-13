@@ -15,6 +15,7 @@ Run:  streamlit run dashboard.py
 import json
 import os
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -233,6 +234,35 @@ DATA_DICT = {
         ),
         ("self_peak_mw / self_avg_mw", "The fixed self-scheduled (must-take) portion."),
     ],
+    "virtual": [
+        ("day / h", "Trade date, and hour beginning in Pacific time."),
+        ("side", "Supply = a bet that day-ahead is too expensive (an INC). Demand = the opposite."),
+        (
+            "mw_avg / mw_peak",
+            "Megawatts of virtual bids submitted into the average and the busiest hour "
+            "of that day. Bids offered — CAISO does not publish which of them cleared.",
+        ),
+        (
+            "mw_pricetaker_avg",
+            "The portion offered at the -$150 floor (supply) or the $1,000 cap (demand): "
+            "fill-me-at-any-price bids.",
+        ),
+        (
+            "n_sc_peak / n_node_peak",
+            "Distinct traders and distinct nodes active in that day's busiest hour.",
+        ),
+        ("n_bids", "Bid curves — one per trader × node × hour × side, not one per price step."),
+        (
+            "marg_price",
+            "MW-weighted price of the last megawatt on each curve — the bid's reservation "
+            "price, the number that decides whether it clears.",
+        ),
+        (
+            "sc / node",
+            "Pseudonymous trader and location IDs. Stable all year, but they map to no name.",
+        ),
+        ("mwh", "Megawatt-hours of virtual bids submitted across the year. Offered, not awarded."),
+    ],
     "earnings": [
         ("res", "Anonymous bidder ID (RESOURCEBID_SEQ). Not a CAISO resource name."),
         ("market / hub", "Which bid market, and which reference price it was settled at."),
@@ -360,6 +390,7 @@ PAGE = st.sidebar.radio(
         "Prices · What power cost",
         "Demand · Who wanted power",
         "Earnings · Who gets paid most",
+        "Virtual bids · Betting on the gap",
         "Screen 1 · Holding back power",
         "Screen 2 · Unmasking bidders",
         "Screen 3 · Look up one bidder",
@@ -1546,6 +1577,438 @@ offered** against a market price of **\\${best["bench_lmp"]:,.2f}** in its hours
         "text/csv",
     )
     show_data_dict("earnings", "bidder earnings")
+
+# =====================================================================
+# PAGE 3c — CONVERGENCE ("VIRTUAL") BIDS
+# =====================================================================
+elif PAGE == "Virtual bids · Betting on the gap":
+    st.markdown("## Betting on the gap between two prices")
+    st.caption(
+        "Not every bid in this market comes from a power plant. A **convergence bid** — a "
+        "*virtual* — is a pure financial bet on the difference between the day-ahead price and "
+        "the real-time price. No electricity is ever generated or consumed. This panel measures "
+        "how big that layer got in 2025, which way it leaned, and whether it did the job it is "
+        "allowed to exist for."
+    )
+
+    if not have("virtual_daily.parquet"):
+        st.warning(
+            "No convergence bid data available. Download CAISO's public convergence bids into "
+            "`convergence_bids_2025/` and re-run `python pipeline.py`."
+        )
+        st.stop()
+
+    VS = META.get("virtual", {}) or {}
+
+    with st.expander("How to read this panel — in plain terms", expanded=False):
+        st.markdown("""
+CAISO settles power twice. The **day-ahead** market sets a price the day before; the **real-time**
+market sets another one as the electricity actually flows. The two rarely agree.
+
+A **convergence bid** lets a trader bet on that disagreement without owning anything:
+
+- **Virtual supply** (an *INC*) — sell power day-ahead you will never generate, then buy it back in
+  real time. You win when **day-ahead lands above real time**.
+- **Virtual demand** (a *DEC*) — buy power day-ahead you will never consume, then sell it back in
+  real time. You win when **real time lands above day-ahead**.
+
+This is deliberate market design, not a loophole. The bets are supposed to be self-cancelling: if
+day-ahead is priced too high, virtual supply floods in and drags it back down, so the two prices
+**converge**. That is the whole point — and it is the thing worth auditing.
+
+**What this panel can and cannot see.** CAISO publishes the bid *curves* but not the *awards*, so
+every megawatt here is **offered, not cleared**. The trader ID and the location ID are both
+pseudonymised — stable across the year, so a trader can be followed, but attached to no company and
+no map. So the panel reports how much was bid, which way it leaned, and whether that direction
+matched the price gap that followed. It cannot report anyone's profit.
+""")
+
+    vd = load("virtual_daily.parquet")
+    vd["day"] = pd.to_datetime(vd["day"])
+    vh = load("virtual_hourly.parquet")
+    vh["h"] = pd.to_datetime(vh["h"])
+
+    # wide (one row per day / hour, a column per side) — every chart below wants the pair
+    vdw = vd.pivot(index="day", columns="side", values="mw_avg").fillna(0).reset_index()
+    for _s in ("Supply", "Demand"):
+        if _s not in vdw.columns:
+            vdw[_s] = 0.0
+    vdw["net"] = vdw["Supply"] - vdw["Demand"]
+    vhw = vh.pivot(index="h", columns="side", values="mw").fillna(0).reset_index()
+    for _s in ("Supply", "Demand"):
+        if _s not in vhw.columns:
+            vhw[_s] = 0.0
+    vhw["net"] = vhw["Supply"] - vhw["Demand"]
+
+    sup_avg = vhw["Supply"].mean()
+    dem_avg = vhw["Demand"].mean()
+    phys_dem = META.get("demand", {}).get("dam_avg_mw", 0)
+
+    c = st.columns(4)
+    kpi(
+        c[0],
+        "Virtual supply bid",
+        f"{sup_avg / 1000:.1f} GW",
+        "per hour on average — sold day-ahead, never generated",
+    )
+    kpi(
+        c[1],
+        "Virtual demand bid",
+        f"{dem_avg / 1000:.1f} GW",
+        "per hour — bought day-ahead, never consumed",
+    )
+    kpi(
+        c[2],
+        "Traders placing them",
+        f"{VS.get('n_traders', vd['n_sc_peak'].max()):,.0f}",
+        f"pseudonymous IDs, across {VS.get('n_nodes', 0):,} locations",
+    )
+    kpi(
+        c[3],
+        "Net lean",
+        f"+{(sup_avg - dem_avg) / 1000:.1f} GW supply",
+        "the layer's standing bet: day-ahead is priced too high",
+        tone="warning",
+    )
+
+    st.markdown("")
+    section(
+        "How big the bet got",
+        "Megawatts of virtual bids submitted into the average hour of each day. Blue is virtual "
+        "**supply**, orange virtual **demand**. Neither line is backed by a generator or a "
+        "customer — this is the financial layer sitting on top of the physical market.",
+    )
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=vdw["day"],
+            y=vdw["Supply"] / 1000,
+            mode="lines",
+            name="Virtual supply (sell day-ahead)",
+            line=dict(color=BLUE, width=2),
+            fill="tozeroy",
+            fillcolor="rgba(42,120,214,0.10)",
+            hovertemplate="%{x|%b %d}<br>Virtual supply: %{y:.2f} GW<extra></extra>",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=vdw["day"],
+            y=vdw["Demand"] / 1000,
+            mode="lines",
+            name="Virtual demand (buy day-ahead)",
+            line=dict(color=ORANGE, width=2),
+            fill="tozeroy",
+            fillcolor="rgba(235,104,52,0.10)",
+            hovertemplate="%{x|%b %d}<br>Virtual demand: %{y:.2f} GW<extra></extra>",
+        )
+    )
+    style(fig, height=360, ytitle="GW bid (daily average hour)")
+    st.plotly_chart(fig, use_container_width=True)
+
+    if phys_dem:
+        st.caption(
+            f"For scale: real buyers bid about **{phys_dem / 1000:.1f} GW** into the average "
+            f"day-ahead hour. The virtual layer adds roughly "
+            f"**{(sup_avg + dem_avg) / phys_dem * 100:.0f}%** on top of that in paper megawatts, "
+            f"and only **{VS.get('pricetaker_share_pct', 0):.1f}%** of it is bid at the price "
+            "floor or cap — against about 95% of physical demand that takes any price at all. "
+            "The financial layer is the price-sensitive part of this market."
+        )
+
+    # ---- direction, and whether it was right -------------------------------
+    st.markdown("")
+    section(
+        "Which way the money leaned — and what the prices did next",
+        "Purple is the **net** virtual position — above zero the layer is net *supply*, betting "
+        "day-ahead is too expensive. Black is the gap that actually materialised, day-ahead minus "
+        "real-time, at the reference price you pick below. Both are 7-day averages, because the "
+        "day-to-day gap swings ten times wider than the signal in it; the exact tests come next.",
+    )
+    hub = st.radio(
+        "Reference price for the gap",
+        ["System average", "SP15", "NP15", "ZP26"],
+        horizontal=True,
+        help="Virtual bids carry a pseudonymous node ID, so they cannot be settled at their own "
+        "location. The gap is therefore measured at a regional reference price; switch it to see "
+        "how much that choice moves the answer.",
+    )
+    hub_key = "SYS" if hub == "System average" else hub
+
+    ph = load("price_hourly.parquet")
+    ph = ph[ph["hub"] == hub_key].copy()
+    ph["h"] = pd.to_datetime(ph["h"])
+    _dam = ph[ph["market"] == "DAM"][["h", "lmp"]].rename(columns={"lmp": "dam"})
+    _rtm = ph[ph["market"] == "RTM"][["h", "lmp"]].rename(columns={"lmp": "rtm"})
+    gaps = _dam.merge(_rtm, on="h")
+    gaps["gap"] = gaps["dam"] - gaps["rtm"]
+
+    cf = vhw.merge(gaps, on="h")  # hours with both a virtual bid and both prices
+    # The raw daily gap swings ±$30 around a mean near +$1, so plotted straight it is a
+    # solid band of noise that hides the very thing this chart is about. A 7-day mean
+    # keeps the shape of the year and is labelled as smoothed on the axis and in the hover.
+    cf_day = cf.assign(day=cf["h"].dt.floor("D")).groupby("day", as_index=False)["gap"].mean()
+    cf_day["gap_7d"] = cf_day["gap"].rolling(7, min_periods=3).mean()
+    # Both series get the SAME 7-day window, so the eye is comparing like with like. This
+    # chart is for shape only — the actual test of the relationship is the decile chart and
+    # the correlation below, both computed on the raw hourly numbers.
+    vdw["net_7d"] = vdw["net"].rolling(7, min_periods=3).mean()
+
+    fig2 = make_subplots(specs=[[{"secondary_y": True}]])
+    fig2.add_trace(
+        go.Scatter(
+            x=vdw["day"],
+            y=vdw["net_7d"] / 1000,
+            mode="lines",
+            name="Net virtual position, supply − demand (7-day average)",
+            line=dict(color=VIOLET, width=2),
+            fill="tozeroy",
+            fillcolor="rgba(74,58,167,0.12)",
+            hovertemplate="%{x|%b %d}<br>Net, 7-day avg: %{y:+.2f} GW<extra></extra>",
+        ),
+        secondary_y=False,
+    )
+    fig2.add_trace(
+        go.Scatter(
+            x=cf_day["day"],
+            y=cf_day["gap_7d"],
+            mode="lines",
+            name="Day-ahead minus real-time price (7-day average)",
+            line=dict(color=INK, width=2),
+            hovertemplate="%{x|%b %d}<br>Gap, 7-day avg: %{y:+.2f} $/MWh<extra></extra>",
+        ),
+        secondary_y=True,
+    )
+    fig2.add_hline(y=0, line_width=1, line_dash="dot", line_color=MUTED, secondary_y=True)
+    style(fig2, height=380, ytitle="Net GW bid")
+    fig2.update_yaxes(
+        title_text="Day-ahead − real-time, 7-day avg ($/MWh)", secondary_y=True, showgrid=False
+    )
+    st.plotly_chart(fig2, use_container_width=True)
+
+    pct_net_supply = (cf["net"] > 0).mean() * 100
+    base_rate = (cf["gap"] > 0).mean() * 100
+    hit = (np.sign(cf["net"]) == np.sign(cf["gap"])).mean() * 100
+    corr = cf["net"].corr(cf["gap"])
+
+    st.markdown("")
+    section(
+        "Did the bets close the gap?",
+        "The bet only works as market design if more virtual supply shows up when day-ahead is "
+        "genuinely overpriced. Left: hours sorted into ten groups by how supply-heavy the layer "
+        "was, against the gap that followed. Right: how often the layer pointed the right way, "
+        "grouped by how big the gap turned out to be.",
+    )
+    left, right = st.columns(2)
+    with left:
+        cf = cf.copy()
+        cf["bin"] = pd.qcut(cf["net"], 10, duplicates="drop")
+        dec = (
+            cf.groupby("bin", observed=True)
+            .agg(net=("net", "mean"), gap=("gap", "mean"), n=("gap", "size"))
+            .reset_index()
+        )
+        # Label each decile by its GW range. Two adjacent deciles can round to the same
+        # label when the middle of the distribution is tight, and plotly would silently
+        # merge same-named bars into one — so widen the precision until they are distinct.
+        for _dp in (1, 2, 3):
+            dec["label"] = dec["bin"].apply(
+                lambda iv, _dp=_dp: f"{iv.left / 1000:.{_dp}f} to {iv.right / 1000:.{_dp}f}"
+            )
+            if dec["label"].is_unique:
+                break
+        # One colour, deliberately. Colouring the negative bars red would read as "these
+        # hours went wrong", when a negative gap in the least supply-heavy hours is the
+        # direction the design predicts. The story is the climb, and the axis carries the sign.
+        fig3 = go.Figure(
+            go.Bar(
+                x=dec["label"],
+                y=dec["gap"],
+                marker_color=BLUE,
+                marker_line_width=0,
+                customdata=np.stack([dec["n"], dec["net"] / 1000], axis=-1),
+                hovertemplate="Net %{customdata[1]:.1f} GW supply<br>"
+                "Average gap: %{y:+.2f} $/MWh<br>%{customdata[0]:,} hours<extra></extra>",
+            )
+        )
+        style(
+            fig3,
+            height=330,
+            legend=False,
+            ytitle="Avg day-ahead − real-time ($/MWh)",
+            xtitle="Net virtual supply that hour (GW)",
+        )
+        st.plotly_chart(fig3, use_container_width=True)
+        st.caption(
+            f"Every step up in virtual supply comes with a bigger day-ahead premium — from "
+            f"**{dec['gap'].iloc[0]:+.2f}** \\$/MWh in the least supply-heavy tenth of hours to "
+            f"**{dec['gap'].iloc[-1]:+.2f}** in the most. The climb is what the design predicts; "
+            f"the hour-by-hour correlation behind it is only **{corr:+.2f}** across "
+            f"{len(cf):,} hours, so it is a tendency, not a tight relationship."
+        )
+    with right:
+        cf["absbin"] = pd.cut(
+            cf["gap"].abs(),
+            [-0.01, 5, 20, 50, 1e9],
+            labels=["under $5", "$5–20", "$20–50", "over $50"],
+        )
+        hb = (
+            cf.groupby("absbin", observed=True)
+            .apply(
+                lambda g: pd.Series(
+                    {
+                        "hit": (np.sign(g["net"]) == np.sign(g["gap"])).mean() * 100,
+                        "n": len(g),
+                    }
+                ),
+                include_groups=False,
+            )
+            .reset_index()
+        )
+        # The sample thins out fast — the widest bucket is a couple of dozen hours out of
+        # 8,700 — so the count goes on the axis label, not just in the hover. A 30% read
+        # off 20 hours should not look like the 58% read off 4,395.
+        fig4 = go.Figure(
+            go.Bar(
+                x=[
+                    f"{b}<br><span style='font-size:11px'>{n:,.0f} hours</span>"
+                    for b, n in zip(hb["absbin"].astype(str), hb["n"])
+                ],
+                y=hb["hit"],
+                marker_color=[BLUE if v >= 50 else RED for v in hb["hit"]],
+                marker_line_width=0,
+                text=[f"{v:.0f}%" for v in hb["hit"]],
+                textposition="outside",
+                customdata=hb["n"],
+                hovertemplate="Gap %{x}<br>Right direction: %{y:.1f}%<extra></extra>",
+            )
+        )
+        fig4.add_hline(y=50, line_width=1, line_dash="dot", line_color=MUTED)
+        style(
+            fig4,
+            height=330,
+            legend=False,
+            ytitle="Hours the layer pointed the right way (%)",
+            xtitle="How big the gap turned out to be",
+        )
+        fig4.update_yaxes(range=[0, 100])
+        st.plotly_chart(fig4, use_container_width=True)
+        st.caption(
+            "The dotted line is a coin flip. The layer earns its keep on the small gaps and is "
+            "on the wrong side of the big ones."
+        )
+
+    flip = cf[cf["net"] < 0]
+    flip_right = (flip["gap"] < 0).mean() * 100 if len(flip) else 0
+    st.info(
+        f"**Read the headline number carefully.** The layer bid **net supply in "
+        f"{pct_net_supply:.0f}%** of hours — a standing one-way bet that day-ahead is overpriced, "
+        f"not a position that flips with conditions. So the **{hit:.0f}%** of hours it pointed "
+        f"the right way is very nearly just the **{base_rate:.0f}%** of hours in which day-ahead "
+        f"happened to land above real time. That number is the market's standing tilt showing "
+        f"through, not a measure of skill.\n\n"
+        f"The graded version above is the more informative test, and it passes: heavier virtual "
+        f"supply really does go with a wider day-ahead premium, and on the "
+        f"**{len(flip):,} hours** the layer did flip to net *demand*, real time came in above "
+        f"day-ahead **{flip_right:.0f}%** of the time. The traders are reading the market. What "
+        f"they have not done is flatten it — after a full year of one-directional pressure the "
+        f"day-ahead premium the bets exist to arbitrage away is still there, averaging "
+        f"**\\${cf['gap'].mean():+.2f}/MWh**."
+    )
+
+    # ---- who ---------------------------------------------------------------
+    st.markdown("")
+    section(
+        "Who is placing the bets, and when",
+        "Left: the busiest traders by megawatt-hours bid across the year, split by direction. "
+        "Right: the shape of an average day.",
+    )
+    lo, ro = st.columns(2)
+    with lo:
+        if have("virtual_sc.parquet"):
+            vsc = load("virtual_sc.parquet")
+            tot = vsc.groupby("sc", as_index=False)["mwh"].sum().sort_values("mwh", ascending=False)
+            top = tot.head(15)["sc"].tolist()
+            sub = vsc[vsc["sc"].isin(top)].copy()
+            sub["sc"] = pd.Categorical(sub["sc"], categories=top[::-1], ordered=True)
+            fig5 = go.Figure()
+            for side, colr in (("Supply", BLUE), ("Demand", ORANGE)):
+                s = sub[sub["side"] == side].sort_values("sc")
+                fig5.add_trace(
+                    go.Bar(
+                        y=[f"Trader {v}" for v in s["sc"]],
+                        x=s["mwh"] / 1e6,
+                        name=f"Virtual {side.lower()}",
+                        orientation="h",
+                        marker_color=colr,
+                        marker_line_width=0,
+                        hovertemplate="%{y}<br>" + side + ": %{x:.2f} TWh bid<extra></extra>",
+                    )
+                )
+            # horizontal stacks otherwise legend in reverse of the plotting order
+            fig5.update_layout(barmode="stack", legend_traceorder="normal")
+            style(fig5, height=420, ytitle=None, xtitle="TWh of virtual bids submitted")
+            st.plotly_chart(fig5, use_container_width=True)
+            st.caption(
+                f"The five busiest traders place **{VS.get('top5_share_pct', 0):.0f}%** of all "
+                f"virtual megawatt-hours, the top ten **{VS.get('top10_share_pct', 0):.0f}%**. "
+                "IDs are pseudonyms and cannot be resolved to a company."
+            )
+    with ro:
+        hod = (
+            vh.assign(hr=vh["h"].dt.hour)
+            .groupby(["hr", "side"], as_index=False)["mw"]
+            .mean()
+            .pivot(index="hr", columns="side", values="mw")
+            .reset_index()
+        )
+        fig6 = go.Figure()
+        for side, colr in (("Supply", BLUE), ("Demand", ORANGE)):
+            if side in hod.columns:
+                fig6.add_trace(
+                    go.Scatter(
+                        x=hod["hr"],
+                        y=hod[side] / 1000,
+                        mode="lines",
+                        name=f"Virtual {side.lower()}",
+                        line=dict(color=colr, width=2.4),
+                        hovertemplate="Hour %{x}:00<br>" + side + ": %{y:.2f} GW<extra></extra>",
+                    )
+                )
+        style(fig6, height=420, ytitle="GW bid (average)", xtitle="Hour of the day")
+        st.plotly_chart(fig6, use_container_width=True)
+        st.caption(
+            "Virtual activity roughly doubles between the small hours and the middle of the day, "
+            "and supply outruns demand in every single hour."
+        )
+
+    st.markdown("")
+    dl1, dl2 = st.columns(2)
+    with dl1:
+        st.download_button(
+            "⬇ Download daily virtual bids (CSV)",
+            vd.to_csv(index=False),
+            "caiso_virtual_bids_daily_2025.csv",
+            "text/csv",
+        )
+    with dl2:
+        if have("virtual_sc.parquet"):
+            st.download_button(
+                "⬇ Download per-trader totals (CSV)",
+                load("virtual_sc.parquet").to_csv(index=False),
+                "caiso_virtual_bids_by_trader_2025.csv",
+                "text/csv",
+            )
+    show_data_dict("virtual", "virtual bids")
+
+    st.caption(
+        "**Caveats.** These are bids submitted, not positions cleared — CAISO publishes the "
+        "convergence bid curves but not the awards, so no profit or loss can be computed here and "
+        "the megawatt-hours are offered volume. Traders and nodes are pseudonymous, so the gap is "
+        "measured at a regional reference price rather than each bid's own node, and a trader ID "
+        "is never attributable to a company. 2025-07-01 is published empty by CAISO and 2025-03-09 "
+        "is the 23-hour spring-forward day."
+    )
 
 # =====================================================================
 # PAGE 2 — ECONOMIC WITHHOLDING

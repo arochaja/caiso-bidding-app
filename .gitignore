@@ -4,8 +4,15 @@ caiso-data/*.parquet
 # CEC plant list: a raw input like the parquets. Stage 5f reduces it to aggregate counts
 # in bidder_anonymity.parquet (which IS committed), so the deployed app never reads it.
 caiso-data/*.csv
+# node/location reference workbooks — same policy: a raw input, not a build product.
+caiso-data/*.xls
+caiso-data/*.xlsx
 # real-time LMP: ~50GB of nested parquets (monthly files + a "december parts/" folder)
 caiso-data/2025-RTM-LMP/
+# convergence ("virtual") bids: ~450MB of gzipped CSV, one folder per trade date.
+# Stage 2d reduces them to the virtual_*.parquet files in app/data/derived/ (which ARE
+# committed), so the deployed app never reads this folder.
+convergence_bids_2025/
 # NOTE: app/data/derived/ IS committed so the deployed app has its data.
 # (It's small, pre-aggregated output — the large raw caiso-data/ stays ignored.)
 app/.cache/
@@ -18,6 +25,12 @@ app/.streamlit/secrets.toml
 
 # --- generated code-review artifacts (Lever 2) ---
 .claude/reviews/
+
+# --- standalone animation (viz/): scripts are tracked, its build products are not.
+# price_grid.npz alone is ~70 MB and the MP4 is regenerated from the raw data by
+# `viz/README.md`'s four commands, so none of it belongs in git.
+viz/.venv/
+viz/out/
 
 # --- python env / caches ---
 app/.venv/

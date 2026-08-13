@@ -43,6 +43,13 @@ RTM_LMP = [
     os.path.join(DATA, "2025-RTM-LMP", "RTM_2025-*.parquet"),
     os.path.join(DATA, "2025-RTM-LMP", "december parts", "*.parquet"),
 ]
+# Convergence ("virtual") bids: CAISO's PUB_CB_DAM group, one gzipped CSV per trade date
+# in a per-date folder. This is a separate ~450MB download that lives OUTSIDE caiso-data/,
+# and Stage 2d skips itself when the directory is absent rather than failing the run.
+CBIDS = os.environ.get(
+    "CAISO_CBIDS", os.path.abspath(os.path.join(HERE, "..", "convergence_bids_2025"))
+)
+
 # the two bid markets scored side by side; RTM is the default/primary market.
 MARKETS = {"RTM": BIDS, "DAM": DAMB}
 
@@ -613,6 +620,229 @@ log(
     f"  day-ahead demand: avg {demand_stats[0]:,.0f} MW, peak {demand_stats[1]:,.0f} MW, "
     f"{demand_stats[2]}% must-take (self-scheduled)"
 )
+
+# =====================================================================
+# Stage 2d: CONVERGENCE ("VIRTUAL") BIDS — the purely financial layer
+#
+#   A convergence bid is a bet, not a power plant. A trader sells energy in the
+#   day-ahead market that it has no intention of generating (virtual SUPPLY, the
+#   "INC"), then buys it back in real time; or the mirror image, buying power
+#   day-ahead it never intends to consume (virtual DEMAND, the "DEC"). No
+#   megawatt ever moves. The trader is paid — or charged — the difference
+#   between the day-ahead and the real-time price at that location.
+#
+#   CAISO allows this because it is supposed to be self-correcting arbitrage: if
+#   day-ahead is sitting above real time, virtual supply piles in and pushes it
+#   back down. So the audit question for this layer is not the one the
+#   withholding screens ask. It is "did the bets actually converge the two
+#   prices, and how concentrated is the money placing them".
+#
+#   THE FILE. Published separately from the resource bid files (PUB_CB_DAM
+#   group), one gzipped CSV per trade date. Both the trader and the location
+#   arrive PSEUDONYMISED — PSEUDO_SC_ID / PSEUDO_NODE_ID. The IDs are stable
+#   across the year, so a trader can be followed, but they carry no name and no
+#   coordinates. A virtual bid therefore can NEVER be settled at its own node
+#   price here; it can only be set against the hub/system spread.
+#
+#   HOUR KEY — the Stage 2b trap in a new costume. BID_INT_START_TIME is a LOCAL
+#   wall-clock stamp that the file tags with a literal "-00:00" offset. Let
+#   DuckDB cast it and it reads local midnight as UTC midnight, shifting the
+#   whole year 8 hours so that hour 00 of each trade date lands in the previous
+#   afternoon. We read the column as TEXT and strptime the first 19 characters
+#   instead. That also makes the DST days fall out right, because the wall clock
+#   is what the bid was submitted against. BID_INT_START_TIME_GMT is the honest
+#   UTC twin and agrees exactly (local + 8h winter, + 7h summer).
+#
+#   ONE ROW IS ONE POINT ON A CURVE, NOT A BID. Every (trader, node, hour, side)
+#   group is a monotone piecewise curve — rising for supply, falling for demand —
+#   whose x axis is MW and y axis is $/MWh, always starting at x = 0. The
+#   MEGAWATTS BID is max(x) over the group, NOT the sum of its rows, which would
+#   count every breakpoint again. ~70M rows collapse to ~31M curves.
+#
+#   PRICE-TAKER. The convergence bid floor is -$150/MWh and the cap $1,000/MWh.
+#   Supply offered down at the floor, or demand bid up at the cap, is saying "fill
+#   me at whatever the price turns out to be" — the virtual equivalent of the
+#   self-schedule that dominates the physical demand side. It is a useful contrast:
+#   physical demand is ~95% price-insensitive, this layer is ~2%.
+#
+#   OPTIONAL STAGE. The convergence files are a separate ~450MB download, so a
+#   missing directory skips the stage with a warning rather than failing the run.
+#   The dashboard panel guards on the same files being absent.
+# =====================================================================
+CB_PRICE_FLOOR = -150.0  # $/MWh: convergence bid floor
+CB_PRICE_CAP = 1000.0  # $/MWh: convergence bid cap
+cb_files = sorted(glob.glob(os.path.join(CBIDS, "*", "*.csv.gz")))
+virtual_stats = {}
+if not cb_files:
+    log(f"Stage 2d: SKIPPED — no convergence bid files under {CBIDS}")
+else:
+    log(f"Stage 2d: convergence (virtual) bids — {len(cb_files)} daily files...")
+    # Aggregate a month at a time. The whole year is ~70M rows of gzipped CSV; going
+    # file-by-file costs 364 query plans, and going all-at-once needs the raw rows
+    # resident before the group-by can collapse them.
+    con.execute("""
+    create or replace table cb_curves(
+      day date, h timestamp, sc bigint, node bigint, node_type varchar, side varchar,
+      mw double, p_lo double, p_hi double, n_steps bigint)
+    """)
+    for month in sorted({os.path.basename(os.path.dirname(f))[:7] for f in cb_files}):
+        con.execute(f"""
+        insert into cb_curves
+        select cast(substr(BID_INT_START_TIME,1,10) as date),
+               strptime(substr(BID_INT_START_TIME,1,19),'%Y-%m-%dT%H:%M:%S'),
+               PSEUDO_SC_ID, PSEUDO_NODE_ID, any_value(NODE_TYPE), SUPPLY_DEMAND_FLAG,
+               max(SCHEDULED_BID_X),          -- MW bid = top of the curve
+               min(SCHEDULED_BID_Y),          -- cheapest point
+               max(SCHEDULED_BID_Y),          -- dearest point
+               count(*)
+        from read_csv_auto('{os.path.join(CBIDS, month + "-*", "*.csv.gz")}',
+                           types={{'BID_INT_START_TIME':'VARCHAR'}})
+        group by 1, 2, 3, 4, 6
+        """)
+        log(f"  {month} done")
+
+    # A supply curve's marginal (last, dearest) megawatt sits at p_hi; a demand curve
+    # falls, so its marginal megawatt sits at p_lo. That marginal price is the bid's
+    # actual reservation price — the number that decides whether it clears.
+    marg = "case when side='Supply' then p_hi else p_lo end"
+    taker = (
+        f"case when side='Supply' then p_lo <= {CB_PRICE_FLOOR + 0.01} "
+        f"else p_hi >= {CB_PRICE_CAP - 0.01} end"
+    )
+    con.execute(f"""
+    create or replace table cb_hourly as
+    select h, side,
+           sum(mw)                                          as mw,
+           sum(case when {taker} then mw else 0 end)         as mw_pricetaker,
+           count(distinct sc)                               as n_sc,
+           count(distinct node)                             as n_node,
+           count(*)                                         as n_bids,
+           sum(mw * ({marg})) / nullif(sum(mw),0)           as marg_price
+    from cb_curves group by 1, 2
+    """)
+    con.execute(f"""
+    copy (select * from cb_hourly order by h, side)
+    to '{OUT}/virtual_hourly.parquet' (format parquet)
+    """)
+    con.execute(f"""
+    copy (
+      select cast(h as date) as day, side,
+             avg(mw)             as mw_avg,
+             max(mw)             as mw_peak,
+             avg(mw_pricetaker)  as mw_pricetaker_avg,
+             max(n_sc)           as n_sc_peak,
+             max(n_node)         as n_node_peak,
+             sum(n_bids)         as n_bids,
+             avg(marg_price)     as marg_price
+      from cb_hourly group by 1, 2 order by 1, 2
+    ) to '{OUT}/virtual_daily.parquet' (format parquet)
+    """)
+    # Per-trader and per-node ledgers. `mwh` sums a per-hour MW quantity over hours, so
+    # it IS megawatt-hours bid — offered, never awarded. Both stay small enough to ship
+    # whole (~110 traders, ~3.2k nodes).
+    con.execute(f"""
+    copy (
+      select sc, side,
+             sum(mw)                as mwh,
+             count(distinct day)    as n_days,
+             count(distinct h)      as n_hours,
+             count(distinct node)   as n_nodes,
+             count(*)               as n_bids,
+             sum(mw * ({marg})) / nullif(sum(mw),0) as marg_price,
+             min(day)               as first_day,
+             max(day)               as last_day
+      from cb_curves group by 1, 2 order by mwh desc
+    ) to '{OUT}/virtual_sc.parquet' (format parquet)
+    """)
+    con.execute(f"""
+    copy (
+      select node, any_value(node_type) as node_type, side,
+             sum(mw)              as mwh,
+             count(distinct sc)   as n_sc,
+             count(distinct h)    as n_hours,
+             count(distinct day)  as n_days
+      from cb_curves group by 1, 3 order by mwh desc
+    ) to '{OUT}/virtual_node.parquet' (format parquet)
+    """)
+
+    # ---- did the bets converge the price? ------------------------------------
+    # Net virtual pressure in an hour = supply MW bid minus demand MW bid. A trader
+    # selling day-ahead (virtual supply) profits when DAY-AHEAD lands ABOVE real time,
+    # so the direction the layer leaned is "right" in an hour when the sign of the net
+    # matches the sign of (DAM - RTM). This is bid pressure, NOT cleared position —
+    # CAISO does not publish the awards — and it is measured against the SYSTEM price
+    # because the nodes are pseudonymised. Both caveats are carried into the panel.
+    con.execute("""
+    create or replace table cb_conv as
+    select v.h,
+           v.net_mw,
+           d.sys_price - r.sys_price as dam_minus_rtm
+    from (
+      select h,
+             sum(case when side='Supply' then mw else -mw end) as net_mw
+      from cb_hourly group by h
+    ) v
+    join sysprice     d on d.h = v.h
+    join rtm_sysprice r on r.h = v.h
+    """)
+    cb_conv = con.execute("""
+      select count(*),
+             corr(net_mw, dam_minus_rtm),
+             avg(case when sign(net_mw) = sign(dam_minus_rtm) then 1.0 else 0.0 end),
+             avg(net_mw),
+             avg(dam_minus_rtm)
+      from cb_conv where net_mw <> 0 and dam_minus_rtm <> 0
+    """).fetchone()
+    cb_tot = con.execute("""
+      select sum(case when side='Supply' then mw end),
+             sum(case when side='Demand' then mw end),
+             sum(case when side='Supply' then mw_pricetaker end),
+             sum(case when side='Demand' then mw_pricetaker end),
+             count(distinct h)
+      from cb_hourly
+    """).fetchone()
+    cb_who = con.execute("""
+      select count(distinct sc), count(distinct node), count(*), count(distinct day)
+      from cb_curves
+    """).fetchone()
+    # Concentration: the share of all virtual megawatt-hours bid by the busiest traders.
+    cb_top = con.execute("""
+      with t as (select sc, sum(mw) mwh from cb_curves group by 1 order by mwh desc)
+      select sum(mwh) filter (where rn <= 5)  / sum(mwh),
+             sum(mwh) filter (where rn <= 10) / sum(mwh)
+      from (select mwh, row_number() over (order by mwh desc) rn from t)
+    """).fetchone()
+    virtual_stats = dict(
+        n_traders=int(cb_who[0]),
+        n_nodes=int(cb_who[1]),
+        n_curves=int(cb_who[2]),
+        n_days=int(cb_who[3]),
+        n_hours=int(cb_tot[4]),
+        supply_mwh=float(cb_tot[0]),
+        demand_mwh=float(cb_tot[1]),
+        supply_avg_mw=float(cb_tot[0]) / cb_tot[4],
+        demand_avg_mw=float(cb_tot[1]) / cb_tot[4],
+        pricetaker_share_pct=100.0 * (cb_tot[2] + cb_tot[3]) / (cb_tot[0] + cb_tot[1]),
+        top5_share_pct=100.0 * float(cb_top[0]),
+        top10_share_pct=100.0 * float(cb_top[1]),
+        conv_hours=int(cb_conv[0]),
+        conv_corr=float(cb_conv[1]),
+        conv_hit_rate_pct=100.0 * float(cb_conv[2]),
+        conv_avg_net_mw=float(cb_conv[3]),
+        conv_avg_spread=float(cb_conv[4]),
+        price_floor=CB_PRICE_FLOOR,
+        price_cap=CB_PRICE_CAP,
+    )
+    log(
+        f"  virtual bids: {virtual_stats['supply_avg_mw']:,.0f} MW supply / "
+        f"{virtual_stats['demand_avg_mw']:,.0f} MW demand per hour, "
+        f"{virtual_stats['n_traders']} traders, {virtual_stats['n_nodes']:,} nodes"
+    )
+    log(
+        f"  convergence: net-vs-spread corr {virtual_stats['conv_corr']:+.3f}, "
+        f"direction right in {virtual_stats['conv_hit_rate_pct']:.1f}% of "
+        f"{virtual_stats['conv_hours']:,} hours"
+    )
 
 # =====================================================================
 # Stage 2c: ESTIMATED ENERGY REVENUE per bidder (the "Earnings" panel)
@@ -2039,6 +2269,40 @@ datasets.append(
     )
 )
 
+if virtual_stats:
+    datasets.append(
+        dict(
+            key="virtual_bids",
+            name="Convergence (virtual) bids",
+            file="convergence_bids_2025/<trade date>/*_PB_CB_PUBLIC_BIDS_N_v1.csv.gz",
+            what="Purely financial bets on the gap between the day-ahead and real-time price. "
+            "No power plant stands behind them: the trader sells day-ahead energy it will never "
+            "generate (virtual supply) or buys energy it will never consume (virtual demand), and "
+            "settles the difference. Both the trader and the location arrive pseudonymised, so this "
+            "file can never be joined to a named company, a plant or a node — it powers the "
+            "Virtual bids panel only.",
+            stats=[
+                ["Rows (individual curve breakpoints)", "~70 million"],
+                ["Bid curves (trader × node × hour × side)", f"{virtual_stats['n_curves']:,}"],
+                ["Distinct pseudonymous traders", f"{virtual_stats['n_traders']:,}"],
+                ["Distinct pseudonymous nodes", f"{virtual_stats['n_nodes']:,}"],
+                [
+                    "Virtual supply bid (hourly average)",
+                    f"{virtual_stats['supply_avg_mw']:,.0f} MW",
+                ],
+                [
+                    "Virtual demand bid (hourly average)",
+                    f"{virtual_stats['demand_avg_mw']:,.0f} MW",
+                ],
+                [
+                    "Bid at the price floor/cap (price-takers)",
+                    f"{virtual_stats['pricetaker_share_pct']:.1f}% of MW",
+                ],
+                ["Days covered", f"{virtual_stats['n_days']} (2025-07-01 published empty)"],
+            ],
+        )
+    )
+
 # CEC plant list — documented because it IS an outside dataset, even though only
 # aggregate counts derived from it are published (see Stage 5f).
 if anon_stats:
@@ -2155,6 +2419,7 @@ meta = dict(
         dam_peak_mw=float(demand_stats[1]),
         dam_musttake_share_pct=float(demand_stats[2]),
     ),
+    virtual=virtual_stats,
     earnings=earn_meta,
     reident_candidate_bidders=int(mdf_forced["res"].nunique()) if len(mdf_forced) else 0,
     reident_candidate_bidders_combined=int(mdf_combined["res"].nunique())
