@@ -391,6 +391,7 @@ PAGE = st.sidebar.radio(
         "Demand · Who wanted power",
         "Earnings · Who gets paid most",
         "Virtual bids · Betting on the gap",
+        "Local spikes · Who bid differently",
         "Screen 1 · Holding back power",
         "Screen 2 · Unmasking bidders",
         "Screen 3 · Look up one bidder",
@@ -3606,6 +3607,650 @@ elif PAGE == "Screen 3 · Look up one bidder":
             "text/csv",
         )
         show_data_dict("reident", "candidate list")
+
+elif PAGE == "Local spikes · Who bid differently":
+    st.markdown("## Who bid differently when the price separated locally")
+    st.caption(
+        "Every other scarcity measure in this tool is statewide. This one is not. It finds the "
+        "hours when the price **near one plant** pulled away from the rest of California while "
+        "that plant's own capacity sat offline — then asks which plants offered power on "
+        "different terms in exactly those hours than they do in their own ordinary ones."
+    )
+
+    if not have("local_spike_events.parquet"):
+        st.warning(
+            "This panel needs `local_spike_events.parquet`. Re-run `python pipeline.py` "
+            "(the first run reads the full day-ahead and real-time price files and is slow)."
+        )
+        st.stop()
+
+    LSE = load("local_spike_events.parquet")
+    LSH = load("local_spike_hours.parquet")
+    LSM = load_meta().get("local_spike", {}) or {}
+    if not LSM:
+        try:
+            with open(os.path.join(DER, "local_spike_meta.json")) as _f:
+                LSM = json.load(_f)
+        except Exception:
+            LSM = {}
+
+    with st.expander("How to read this panel — in plain terms", expanded=False):
+        st.markdown(r"""
+**The problem this fixes.** Elsewhere in this tool an hour counts as "short" when the whole state
+is short — total outages high, statewide price high. That describes a hard afternoon, but it is a
+weak test of any single plant, because a heat wave lifts every price at once and the entire fleet
+looks scarce together. Nothing is attributable to anyone.
+
+**The stricter test.** An hour is flagged **for one plant** only when all four hold at once:
+
+1. A **forced** outage of at least 50 MW at that plant began in the previous 48 hours, and that
+   capacity is **still offline** in the flagged hour.
+2. The **local price** — the average of up to 5 priced grid nodes within 100 km of the plant —
+   sits above the statewide median by an amount in that plant's **own top few percent** for the year.
+3. That local premium is at least \$10/MWh above the plant's **own** average premium over the
+   previous 72 hours, so a spot that is simply always expensive does not flag every hour.
+4. The absolute local price is at least \$75/MWh (day-ahead) or \$150/MWh (real-time).
+
+A statewide heat wave clears condition 1 and 4 easily and **fails condition 2**, which is the entire
+point of the design. Runs of flagged hours at one plant collapse into a single **event**, because
+CAISO re-files an ongoing outage with a fresh start time every hour.
+
+**The one thing this panel cannot do — and it matters.** Outage records carry real CAISO resource
+IDs, and it is the substation code inside that ID that makes it possible to put an outage on a map
+at all. **Bid records carry only an anonymous number** — no node, no zone, no name, no coordinates.
+
+So geography tells us **when** a local separation happened and **at which real plant**. It can never
+tell us which anonymous bidder stood near it. Every bidder in the tables below is therefore scored
+against **the set of hours** the screen produced. **No plant listed here is claimed to be near, or
+connected to, the outage that defined the hour.** If you read proximity into this table, you will be
+reading something the data cannot support.
+
+**How "bid differently" is measured.** Each anonymous plant is compared **against itself at the same
+hour of day** — local spikes cluster in the evening ramp, and so does everyone's normal book, so an
+unmatched annual average would score the shape of the day as if it were a reaction to the event.
+Hours a plant sat out are counted as a **zero offer**, not skipped, because declining to bid is a
+decision and dropping it would score a total withdrawal as no change at all.
+""")
+
+    LS_MK = st.radio("Market", ["Day-ahead (DAM)", "Real-time (RTM)"], horizontal=True, key="ls_mk")
+    LS_M = "DAM" if LS_MK.startswith("Day") else "RTM"
+    ls_mm = (LSM.get("markets", {}) or {}).get(LS_M, {}) or {}
+    ev_m = LSE[LSE.market == LS_M].copy()
+    hr_m = LSH[LSH.market == LS_M].copy()
+
+    c = st.columns(5)
+    kpi(c[0], "Local spike events", f"{len(ev_m):,}", "runs of flagged hours at one plant")
+    kpi(c[1], "Plants involved", f"{ev_m.rid.nunique():,}", "real, named, geolocated plants")
+    kpi(
+        c[2],
+        "Event hours",
+        f"{int(hr_m.is_event.sum()):,}",
+        f"{100 * hr_m.is_event.mean():.1f}% of the year",
+    )
+    kpi(
+        c[3],
+        "Peak local price",
+        f"\\${ev_m.peak_local_lmp.max():,.0f}",
+        "highest local price inside any event",
+    )
+    gc = LSM.get("geo_coverage", {}) or {}
+    kpi(
+        c[4],
+        "Outages placed on the map",
+        f"{gc.get('pct_placed', 0)}%",
+        f"{gc.get('pct_mw_placed', 0)}% of curtailed megawatts; the rest carry no usable location",
+    )
+
+    st.markdown("")
+    section(
+        "The events themselves",
+        "Each row is one episode at one real plant. `Offline (min)` is the smallest amount of that "
+        "plant's capacity still out during the flagged hours — the screen only requires 50 MW at "
+        "the outage's START, so a low value here means the megawatts had largely returned by the "
+        "time the price moved.",
+    )
+    lo, ro = st.columns([3, 2])
+    with lo:
+        show = ev_m.sort_values("peak_local_lmp", ascending=False).head(400)
+        st.dataframe(
+            show[
+                [
+                    "event_id",
+                    "rname",
+                    "start_local",
+                    "end_local",
+                    "n_hours",
+                    "curt_mw",
+                    "offline_mw_min",
+                    "peak_local_lmp",
+                    "peak_premium",
+                    "geo_source",
+                ]
+            ].rename(
+                columns={
+                    "event_id": "Event",
+                    "rname": "Plant",
+                    "start_local": "From",
+                    "end_local": "To",
+                    "n_hours": "Hours",
+                    "curt_mw": "Offline (max MW)",
+                    "offline_mw_min": "Offline (min MW)",
+                    "peak_local_lmp": "Peak local $/MWh",
+                    "peak_premium": "Peak premium $/MWh",
+                    "geo_source": "Located by",
+                }
+            ),
+            hide_index=True,
+            use_container_width=True,
+            height=380,
+        )
+    with ro:
+        gm = ev_m.groupby(["rid", "rname"], as_index=False).agg(
+            events=("event_id", "size"),
+            lat=("lat", "first"),
+            lon=("lon", "first"),
+            peak=("peak_local_lmp", "max"),
+        )
+        fig = go.Figure(
+            go.Scattergeo(
+                lat=gm.lat,
+                lon=gm.lon,
+                text=gm.rname,
+                customdata=np.stack([gm.events, gm.peak], axis=-1),
+                hovertemplate="<b>%{text}</b><br>%{customdata[0]} events"
+                "<br>peak local $%{customdata[1]:.0f}/MWh<extra></extra>",
+                marker=dict(
+                    size=gm.events,
+                    sizemode="area",
+                    sizeref=max(gm.events.max() / 500.0, 1e-9),
+                    sizemin=4,
+                    color=gm.peak,
+                    colorscale="YlOrRd",
+                    cmin=float(gm.peak.min()),
+                    cmax=float(gm.peak.max()),
+                    line=dict(width=0.6, color="#52514e"),
+                    colorbar=dict(title="Peak $", thickness=10),
+                ),
+            )
+        )
+        fig.update_geos(
+            scope="usa",
+            center=dict(lat=37.2, lon=-119.5),
+            projection_scale=4.2,
+            showland=True,
+            landcolor="#f2f1ea",
+            showlakes=False,
+            subunitcolor="#c3c2b7",
+            showframe=False,
+        )
+        st.plotly_chart(style(fig, height=380, legend=False), use_container_width=True)
+        st.caption(
+            "Where the flagged outages were. Bubble size is how many events that plant produced; "
+            "colour is the highest local price reached. This map shows the **outages**, not the "
+            "bidders — the bidders have no location."
+        )
+
+    st.markdown("---")
+    section(
+        "Which plants bid differently in those hours",
+        "Anonymous plants, ranked against their own ordinary behaviour at the same hour of day. "
+        "Two different ways of bidding differently are separated on purpose.",
+    )
+
+    if not have("local_spike_curve_rank.parquet"):
+        st.info(
+            "Curve rankings need `local_spike_curve_rank.parquet`. Re-run `python pipeline.py`."
+        )
+        st.stop()
+    CVR = load("local_spike_curve_rank.parquet")
+    CVA = load("local_spike_curve_avg.parquet")
+    LSB = load("local_spike_bidder.parquet")
+    rank = CVR[CVR.market == LS_M].copy()
+
+    f1, f2, f3 = st.columns([1.4, 1, 1])
+    with f1:
+        rank_by = st.radio(
+            "Rank by",
+            ["Shape of the offer (when it bids)", "How much it brings (incl. hours it sits out)"],
+            key="ls_rankby",
+        )
+    with f2:
+        min_mw = st.number_input(
+            "Minimum size (MW offered when it bids)", 0.0, 2000.0, 10.0, 5.0, key="ls_minmw"
+        )
+    with f3:
+        min_bid = st.number_input(
+            "Minimum event hours actually bid in",
+            0,
+            400,
+            20,
+            10,
+            key="ls_minbid",
+            help="The shape comparison is built only from hours the plant actually filed a "
+            "curve. A plant that bid in three event hours can post a huge shape gap "
+            "built from almost nothing.",
+        )
+    f4, _f5 = st.columns([1, 3])
+    with f4:
+        only_sig = st.checkbox(
+            "Only statistically separated",
+            value=False,
+            key="ls_sig",
+            help="Keep plants whose megawatt change also clears |t| ≥ 3 against their own "
+            "hour-of-day spread — the move is large relative to how much this plant "
+            "normally varies, not just large.",
+        )
+
+    sort_col = "gap_pct_active" if rank_by.startswith("Shape") else "gap_pct"
+    view = rank[(rank.cap_normal_act >= min_mw) & (rank.n_event_bid >= min_bid)].copy()
+    if only_sig:
+        sig = LSB[(LSB.market == LS_M) & (LSB.metric == "cap_mw") & LSB.flagged].res.unique()
+        view = view[view.res.isin(sig)]
+    view["participation_change"] = view.part_event - view.part_normal
+    view = view.sort_values(sort_col, ascending=False)
+
+    st.caption(
+        f"**{len(view):,} plants** shown of {len(rank):,} scored in this market. "
+        "*Shape gap* is the area between the plant's ordinary offer curve and its event-hour "
+        "curve, as a share of the box the curve occupies — 0% means the two are identical. "
+        "*Participation* is how often it filed any offer at all."
+    )
+    st.dataframe(
+        view.head(300)[
+            [
+                "res",
+                "cap_normal_act",
+                "cap_event_act",
+                "gap_pct_active",
+                "part_normal",
+                "part_event",
+                "participation_change",
+                "gap_pct",
+                "n_event_bid",
+                "n_event_hours",
+                "is_storage",
+            ]
+        ].rename(
+            columns={
+                "res": "Plant (anon)",
+                "cap_normal_act": "MW normally",
+                "cap_event_act": "MW in events",
+                "gap_pct_active": "Shape gap %",
+                "part_normal": "Bids: normal",
+                "part_event": "Bids: events",
+                "participation_change": "Participation Δ",
+                "gap_pct": "Overall gap %",
+                "n_event_bid": "Event hours bid",
+                "n_event_hours": "Event hours",
+                "is_storage": "Storage",
+            }
+        ),
+        hide_index=True,
+        use_container_width=True,
+        height=420,
+        column_config={
+            "Bids: normal": st.column_config.NumberColumn(format="%.0f%%"),
+            "Bids: events": st.column_config.NumberColumn(format="%.0f%%"),
+            "Participation Δ": st.column_config.NumberColumn(format="%+.0f%%"),
+        },
+    )
+    st.caption(
+        "Bidding differently in scarce hours is what a market is **supposed** to make people do. "
+        "The innocent readings — the unit itself was derated, a fuel limit, a hedge rolling off, "
+        "storage saving its charge for a higher hour — are neither tested nor excluded here. "
+        "This is a list of plants that departed from their own habit, and nothing more."
+    )
+
+    st.markdown("---")
+    section(
+        "Pick an event, then the most unusual bid inside it",
+        "Every offer filed during the selected episode is scored against its own author's "
+        "habit at that hour of the day, and the list opens on the least ordinary one.",
+    )
+    if not have("local_spike_curve_steps.parquet"):
+        st.info(
+            "Per-event curves need `local_spike_curve_steps.parquet`. Re-run `python pipeline.py`."
+        )
+        st.stop()
+    CVS = load("local_spike_curve_steps.parquet")
+    EVB = (
+        load("local_spike_event_bidder.parquet")
+        if have("local_spike_event_bidder.parquet")
+        else pd.DataFrame()
+    )
+
+    e1, e2 = st.columns([2, 1])
+    with e1:
+        ev_pick = ev_m.sort_values("peak_local_lmp", ascending=False).copy()
+        pick_ev = st.selectbox(
+            "Event",
+            ev_pick.event_id.tolist(),
+            key="ls_ev",
+            format_func=lambda e: (
+                f"{e} · {ev_pick.loc[ev_pick.event_id == e, 'rname'].iloc[0]} · "
+                f"{ev_pick.loc[ev_pick.event_id == e, 'start_local'].iloc[0]:%b %d %H:%M} · "
+                f"peak ${ev_pick.loc[ev_pick.event_id == e, 'peak_local_lmp'].iloc[0]:,.0f}/MWh"
+            ),
+        )
+    with e2:
+        rank_mode = st.selectbox(
+            "Order the bids by",
+            [
+                "Most unusual for that plant",
+                "Biggest change in the curve",
+                "Most withheld / repriced up",
+                "Most added / repriced down",
+            ],
+            key="ls_evrank",
+            help="'Most unusual' measures the departure in units of how much that plant "
+            "normally varies, so a naturally erratic bidder does not top the list on "
+            "its ordinary noise.",
+        )
+    erow = ev_pick[ev_pick.event_id == pick_ev].iloc[0]
+
+    scored = (
+        EVB[(EVB.market == LS_M) & (EVB.event_id == pick_ev)].copy() if len(EVB) else pd.DataFrame()
+    )
+    if len(scored):
+        scored["direction"] = np.where(
+            scored.gap_signed_event < 0, "withheld / priced up", "added / priced down"
+        )
+        _order = {
+            "Most unusual for that plant": ("z_vs_own", False),
+            "Biggest change in the curve": ("gap_pct_event", False),
+            "Most withheld / repriced up": ("gap_signed_event", True),
+            "Most added / repriced down": ("gap_signed_event", False),
+        }[rank_mode]
+        scored = scored.sort_values(_order[0], ascending=_order[1])
+
+    st.caption(
+        f"⚠️ Event **{pick_ev}** is a local price separation at **{erow.rname}**, a real, named "
+        f"plant that had {erow.curt_mw:,.0f} MW on forced outage. Every bidder below is "
+        "**anonymous and has no location** — none of them is known to be near or connected to "
+        f"{erow.rname}. The event supplies the hours, nothing more."
+    )
+
+    if not len(scored):
+        st.info(
+            f"No bid filed during {pick_ev} clears the scoring floors — the plant must vary "
+            "enough in its ordinary hours to have a yardstick at all, and the departure must "
+            "be material. Pick another event, or use the plant list below."
+        )
+    else:
+        st.dataframe(
+            scored.head(150)[
+                [
+                    "res",
+                    "cap_mw",
+                    "n_hours_bid",
+                    "peak_mw_norm",
+                    "peak_mw_event",
+                    "gap_pct_event",
+                    "direction",
+                    "pctl_vs_own",
+                    "z_vs_own",
+                ]
+            ].rename(
+                columns={
+                    "res": "Plant (anon)",
+                    "cap_mw": "Size MW",
+                    "n_hours_bid": "Hours bid",
+                    "peak_mw_norm": "MW normally",
+                    "peak_mw_event": "MW filed",
+                    "gap_pct_event": "Curve change %",
+                    "direction": "Direction",
+                    "pctl_vs_own": "Unusual vs own hours",
+                    "z_vs_own": "Std devs from own habit",
+                }
+            ),
+            hide_index=True,
+            use_container_width=True,
+            height=300,
+            column_config={
+                "Unusual vs own hours": st.column_config.NumberColumn(format="%.1f%%"),
+                "Std devs from own habit": st.column_config.NumberColumn(format="%.1f"),
+            },
+        )
+        _t = scored.iloc[0]
+        st.caption(
+            f"**{len(scored):,} bids scored in this event.** The least ordinary is plant "
+            f"**{_t.res}** — it filed {_t.peak_mw_event:,.1f} MW where it normally offers "
+            f"{_t.peak_mw_norm:,.1f} MW at these hours, a curve further from its own habit than "
+            f"{100 * _t.pctl_vs_own:.1f}% of its ordinary hours "
+            f"({_t.z_vs_own:,.1f} standard deviations). "
+            "*Unusual vs own hours* is a percentile inside that plant's own year, so it is not "
+            "comparable in level across plants — the standard-deviation column is."
+        )
+
+    p1, _p2 = st.columns([1, 2])
+    with p1:
+        if len(scored):
+            opts = scored.res.tolist()
+        else:
+            opts = view.res.tolist() or rank.res.tolist()
+
+        # A plant can have NO typical size: if the only ordinary-hour curve it ever filed
+        # falls in an hour of the day where it bid in no event hours, the event-weighted
+        # average carries zero weight and is null. Rare (one plant in 2025) and filtered
+        # out by the defaults, but it must not render as "nan MW typical".
+        def _res_label(r):
+            _c = rank.loc[rank.res == r, "cap_normal_act"]
+            _v = float(_c.iloc[0]) if len(_c) else float("nan")
+            return f"{r} — {_v:,.0f} MW typical" if pd.notna(_v) else f"{r} — size unknown"
+
+        pick_res = st.selectbox(
+            "Plant to draw (ordered by the ranking above)",
+            opts,
+            key="ls_res",
+            format_func=_res_label,
+        )
+
+    ca = CVA[(CVA.market == LS_M) & (CVA.res == pick_res)].sort_values("price")
+    steps = CVS[(CVS.market == LS_M) & (CVS.res == pick_res)]
+    # Floor the window to the hour: a real-time event can run 19:20-19:55 while the bid
+    # rows are hourly and stamped 19:00, so the raw window would match nothing.
+    _ev_lo = erow.start_local.floor("h")
+    steps = steps[(steps.h >= _ev_lo) & (steps.h <= erow.end_local)]
+
+    fig = go.Figure()
+    for h, g in steps.groupby("h"):
+        g = g.sort_values("price")
+        # lines+markers, not lines: a curve filed as a SINGLE step is one point, and
+        # a one-point line renders as nothing at all — the hours where a plant offered
+        # almost nothing would silently vanish, which is exactly the case worth seeing.
+        fig.add_trace(
+            go.Scatter(
+                x=g.price,
+                y=g.mw,
+                mode="lines+markers",
+                line_shape="hv",
+                line=dict(color=ORANGE, width=1.5),
+                marker=dict(size=6, symbol="circle-open"),
+                opacity=0.75,
+                name=f"{h:%b %d %H:%M}",
+                legendgroup="ev",
+                showlegend=False,
+                hovertemplate="%{fullData.name}<br>$%{x:,.0f}/MWh → %{y:,.2f} MW<extra></extra>",
+            )
+        )
+    fig.add_trace(
+        go.Scatter(
+            x=ca.price,
+            y=ca.mw_normal_act,
+            mode="lines+markers",
+            line_shape="hv",
+            line=dict(color=BLUE, width=3),
+            marker=dict(size=5),
+            name="Ordinary hours (average)",
+            hovertemplate="ordinary: $%{x:,.0f}/MWh → %{y:,.1f} MW<extra></extra>",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=ca.price,
+            y=ca.mw_event_act,
+            mode="lines+markers",
+            line_shape="hv",
+            line=dict(color=RED, width=3, dash="dot"),
+            marker=dict(size=5),
+            name="All event hours (average)",
+            hovertemplate="event avg: $%{x:,.0f}/MWh → %{y:,.1f} MW<extra></extra>",
+        )
+    )
+    if len(steps):
+        fig.add_trace(
+            go.Scatter(
+                x=[None],
+                y=[None],
+                mode="lines",
+                line=dict(color=ORANGE, width=1),
+                name=f"Hours inside {pick_ev} ({steps.h.nunique()})",
+            )
+        )
+    # Offers cluster far below the $1,000 bid cap — three quarters of steps sit under
+    # $60 — so a full-width axis spends its resolution on an empty stretch and flattens
+    # the only part that moves. Default to the range where something actually happens.
+    full_axis = st.checkbox(
+        "Show the full price axis to $1,000",
+        value=False,
+        key="ls_fullx",
+        help="Off by default: the curves are flat above roughly $100, and the full axis "
+        "compresses the part that changes into the left edge.",
+    )
+    fig_styled = style(
+        fig,
+        height=430,
+        ytitle="MW offered at or below this price",
+        xtitle="Offer price ($/MWh)",
+    )
+    if not full_axis:
+        # The lowest grid price at which BOTH curves have essentially reached their
+        # plateau. A raw diff test does not work: rounding leaves sub-milliwatt
+        # changes all the way to the bid cap, which pins the axis back at $1,000.
+        _done = ca[
+            (ca.mw_normal_act >= 0.99 * float(ca.mw_normal_act.max()))
+            & (ca.mw_event_act >= 0.99 * max(float(ca.mw_event_act.max()), 1e-12))
+        ]
+        _hi = float(_done.price.min()) if len(_done) else 100.0
+        if len(steps):
+            _hi = max(_hi, float(steps.price.max()))
+        _lo = float(steps.price.min()) if len(steps) else 0.0
+        _lo = min(_lo, 0.0)
+        fig_styled.update_xaxes(range=[_lo - 25, min(1000.0, _hi * 1.15 + 20)])
+    st.plotly_chart(fig_styled, use_container_width=True)
+    if len(steps):
+        _pk = steps.groupby("h").mw.max()
+        _typ = float(ca.mw_normal_act.max())
+        st.markdown(
+            f"**Inside {pick_ev}, plant {pick_res} filed {steps.h.nunique()} offer curve(s), "
+            f"peaking at {_pk.max():,.2f} MW** (lowest hour {_pk.min():,.2f} MW). "
+            f"It typically offers up to {_typ:,.2f} MW at these hours of the day"
+            + (f" — about {100 * _pk.max() / _typ:.0f}% of its usual." if _typ > 0 else ".")
+        )
+    if not len(steps):
+        st.info(
+            f"Plant {pick_res} filed no offer at all during {pick_ev}. That is itself a "
+            "data point — the average curves above still show how it behaves in event hours "
+            "generally, and the participation columns show how often it sits out."
+        )
+    st.caption(
+        "Both averages are taken over the hours this plant **actually filed a curve**, matched on "
+        "hour of day, so they show the *shape* of its offer rather than how often it shows up. "
+        "The `Overall gap %` column in the table above is the same comparison with the sat-out "
+        "hours counted as a zero offer."
+    )
+
+    with st.expander("Method, thresholds and what this cannot tell you"):
+        st.markdown(f"""
+**Screen thresholds for {LS_M}** — the same ones the price/outage animations use, so the panel and
+those films agree:
+
+| | |
+|---|---|
+| Local price | mean of up to {ls_mm.get("near_k", 5)} priced nodes within {ls_mm.get("near_km", 100):.0f} km |
+| Premium bar | that plant's own top {100 - ls_mm.get("prem_pctl", 95):.0f}% for the year |
+| Minimum local price | \\${ls_mm.get("min_lmp", 75):,.0f}/MWh |
+| Rise over own baseline | \\${ls_mm.get("min_jump", 10):,.0f}/MWh above its own previous {ls_mm.get("pre_h", 72)}h |
+| Outage size / window | ≥ {ls_mm.get("min_mw", 50):,.0f} MW starting within {ls_mm.get("window_h", 48)}h, still offline |
+| Episode gap tolerance | {ls_mm.get("gap_h", 6)}h |
+| Result | {ls_mm.get("n_events", 0):,} events, {ls_mm.get("n_event_hours", 0):,} hours ({ls_mm.get("pct_year", 0)}% of the year) |
+
+**Real time uses a higher bar than day-ahead on purpose.** Local real-time premiums are far noisier,
+and at the day-ahead thresholds the real-time screen flags 8.6% of the year against day-ahead's 5% —
+mostly noise. The bar is raised until the two markets flag comparable slices, so the counts can be
+read side by side.
+
+**How "most unusual" is scored.** For every hour a plant filed an offer, we measure the area
+between the curve it filed and that plant's **own average curve for that hour of the day**,
+divided by the plant's own size so a 9 MW unit and a 900 MW one land on the same scale. Over a
+year that gives each plant a distribution of how far it normally strays from itself. The bid
+filed during an event is then placed inside that distribution:
+
+- **Unusual vs own hours** — the percentile of the event's departure within that plant's own
+  ordinary hours. It is a within-plant rank, so it is *not* comparable in level between plants.
+- **Std devs from own habit** — the same departure in units of that plant's own variability.
+  This one *is* comparable across plants, and is the default sort.
+
+Two floors keep arithmetic artefacts off the top. A plant that files a byte-identical curve
+every hour has zero spread, so any rounding-level difference is simultaneously its largest
+departure ever and completely uninformative — before the floors the leaderboard was plants
+whose "record" departure was an area of 9.9 MW × \$, at z-scores of 10¹⁶. A plant must vary by
+at least {LSM.get("curves", {}).get("evsc_min_sd", 0.25)} of its own box to be scored, and the
+event's departure must itself reach {LSM.get("curves", {}).get("evsc_min_gap", 1.0)}.
+
+**Known limits.**
+
+- **The bidder has no location.** Stated above, repeated here because it is the single easiest thing
+  to get wrong about this panel.
+- **Only {gc.get("pct_placed", 0)}% of outage resources can be placed on a map** ({gc.get("pct_mw_placed", 0)}% of
+  curtailed megawatts). Unplaced ones are simply absent from the screen — several are genuinely
+  outside California, and some are pseudo-resources rather than plants.
+- **The 50 MW floor applies to the outage's start, not to every flagged hour.** The `Offline (min MW)`
+  column exposes this; filter on it if you want only events where real capacity stayed out.
+- **Hour of day is matched; season is not.** Event hours cluster in September, so a plant whose
+  output is seasonal is partly compared against a different time of year. Across the whole fleet this
+  does not bias the result — the median plant offers exactly the same megawatts in event hours as in
+  its ordinary ones — but it can matter for any single row.
+- **A screen, not a finding.** It establishes that capacity was offline nearby while the local price
+  pulled away from the rest of the state, and that some plants bid differently in those hours. It
+  does not establish intent, market power, or causation. Common causes — a heat wave that both forces
+  outages and raises prices — produce exactly this signature.
+""")
+
+    d1, d2, d3, d4 = st.columns(4)
+    with d1:
+        st.download_button(
+            "⬇ The events (CSV)",
+            LSE.to_csv(index=False),
+            "caiso_local_spike_events.csv",
+            "text/csv",
+            key="dl_ls_ev",
+        )
+    with d2:
+        st.download_button(
+            "⬇ Per-plant curve ranking (CSV)",
+            CVR.to_csv(index=False),
+            "caiso_local_spike_curve_rank.csv",
+            "text/csv",
+            key="dl_ls_rank",
+        )
+    with d3:
+        st.download_button(
+            "⬇ Averaged offer curves (CSV)",
+            CVA.to_csv(index=False),
+            "caiso_local_spike_curves.csv",
+            "text/csv",
+            key="dl_ls_curves",
+        )
+    with d4:
+        if len(EVB):
+            st.download_button(
+                "⬇ Per-event bid scores (CSV)",
+                EVB.to_csv(index=False),
+                "caiso_local_spike_event_bids.csv",
+                "text/csv",
+                key="dl_ls_evb",
+            )
 
 # =====================================================================
 # PAGE 4 — METHOD & ASSUMPTIONS

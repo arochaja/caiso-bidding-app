@@ -37,11 +37,15 @@ caiso-bidding-app/
 │   ├── 2025-RTM-BIDS.parquet       (you supply)
 │   ├── 2025-DAM-BIDS.parquet       (you supply)
 │   ├── 2025-OUTAGES.parquet        (you supply)
-│   └── 2025-DAM-LMP-full.parquet   (you supply)
+│   ├── 2025-DAM-LMP-full.parquet   (you supply)
+│   ├── 2025-RTM-LMP/               (you supply; ~51 GB, needed by the local-spike screen)
+│   ├── powerplants.csv             (you supply; CEC plant list — geolocation)
+│   └── LMPLocations_vs_FullList.xls (you supply; CAISO node coordinates — geolocation)
 ├── convergence_bids_2025/   # ← optional: CAISO public convergence (virtual) bids
 │   └── <trade date>/*_PB_CB_PUBLIC_BIDS_N_v1.csv.gz   (you supply; gitignored)
 └── app/
     ├── pipeline.py
+    ├── spike_local.py       # Stage 6: geolocation + node price surfaces + the local screen
     ├── dashboard.py
     ├── run.sh
     ├── README.md
@@ -114,6 +118,50 @@ awards**, so nothing here is a cleared position or a profit.
 This stage is **optional** — `pipeline.py` skips it with a warning when
 `convergence_bids_2025/` is absent, and the panel shows a "no data" notice.
 
+### Local outage-price spikes / who bid differently
+The only **geographic** scarcity definition in the tool, ported from the price/outage
+animations in `viz/`. Every other screen calls an hour scarce when the *whole state* is
+short, which describes a hard afternoon but tests no individual plant: a heat wave lifts
+every node at once and the entire fleet looks scarce together.
+
+Here an hour is flagged **for one plant** only when all four hold: a forced outage of
+≥50 MW at that plant began within 48 hours and is **still offline**; the local price (mean
+of up to 5 priced nodes within 100 km) exceeds the statewide median by an amount in that
+plant's **own** top few percent for the year; that premium is ≥$10/MWh above its own
+previous-72-hour average; and the absolute local price clears $75/MWh (day-ahead) or
+$150/MWh (real-time). A statewide event fails condition two by construction.
+
+2025 result: **414 day-ahead events over 463 hours (5.3% of the year)** — reproducing the
+animations exactly — and **511 real-time events over 331 hours (3.8%)**. Only 101 hours
+appear in both sets. Real time deliberately uses a higher bar: at the day-ahead thresholds
+its noisier local premiums flag 8.6% of the year, mostly noise.
+
+Each anonymous plant is then compared **against itself at the same hour of day** in those
+hours, with sat-out hours counted as a zero offer. The panel's centrepiece is the **offer
+curve**: the plant's ordinary curve, its average event-hour curve, and the actual curves
+it filed inside a single selected episode.
+
+**Ranking bids inside one event.** Picking an episode ranks every offer filed during it by how
+far that curve sits from its own author's habit at that hour of the day, normalised by the
+plant's own size and then expressed in units of that plant's own year-round variability
+(`z_vs_own`) and as a percentile of its own ordinary hours (`pctl_vs_own`). Two floors are
+essential: a plant that files an identical curve every hour has zero spread, so a rounding-level
+difference is simultaneously its largest departure ever and meaningless — unguarded, the
+leaderboard was z-scores of 10¹⁶ on areas of 9.9 MW·$. The panel opens on the least ordinary bid
+in the selected event.
+
+> **The limit that defines this panel.** Only the *outage* side has a location. Outage
+> records carry real CAISO resource IDs (`ALTA3A_2_CPCE5`) whose substation code can be
+> geolocated (64% of resources, 69% of curtailed MW). Bid records carry an anonymous
+> integer with no node, no zone and no coordinate — `GHG_AREA` is null in all 17.7M rows.
+> Geography therefore fixes **when** a separation happened and **at which real plant**;
+> every bidder is scored against that *set of hours*. **No bidder shown is claimed to be
+> near or connected to the outage that defined the hour.**
+
+The first run reads 2.9 GB of day-ahead and 51 GB of real-time node prices (~30 min) and
+caches both surfaces under `CAISO_SCRATCH`; later runs reuse them. Needs `rapidfuzz` and
+`xlrd` from `requirements-dev.txt`.
+
 ### 2. Re-identification / fingerprinting
 Demonstrates that the anonymization is **reversible** for many resources. Links an
 anonymous `RESOURCEBID_SEQ` to a **named plant** using two public side-channels:
@@ -165,6 +213,14 @@ when the raw data changes.
 | `virtual_hourly/daily.parquet` | convergence bids per hour/day × side: MW bid, price-taker MW, traders, nodes, marginal price |
 | `virtual_sc.parquet` | per-trader virtual totals (pseudonymous `sc`) |
 | `virtual_node.parquet` | per-node virtual totals (pseudonymous `node`) |
+| `local_spike_geo.parquet` | outage resources with coordinates + which rung of the matching ladder placed them |
+| `local_spike_events.parquet` | one row per local spike episode: plant, market, window, depth, peak local price/premium |
+| `local_spike_hours.parquet` | hourly spine per market with the `is_event` flag the bid stage joins on |
+| `local_spike_bidder.parquet` | per-plant hour-of-day-matched deviation (`cap_mw`/`elev_mw`/`elev_share`) with `dev_sd`, `t_stat` |
+| `local_spike_curve_avg.parquet` | averaged offer curves per plant: all-hours and active-hours, normal vs event |
+| `local_spike_curve_rank.parquet` | curve-shape gap, participation rates, filed-hour counts |
+| `local_spike_curve_steps.parquet` | the raw filed curve steps inside every event hour |
+| `local_spike_event_bidder.parquet` | per (event, plant) unusualness: curve distance, direction, `pctl_vs_own`, `z_vs_own` |
 | `meta.json` | thresholds, coverage, assumptions |
 
 ## Key assumptions (see the in-app "Method & Assumptions" page)

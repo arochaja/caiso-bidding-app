@@ -220,46 +220,6 @@
       ]
     },
     {
-      "key": "virtual_bids",
-      "name": "Convergence (virtual) bids",
-      "file": "convergence_bids_2025/<trade date>/*_PB_CB_PUBLIC_BIDS_N_v1.csv.gz",
-      "what": "Purely financial bets on the gap between the day-ahead and real-time price. No power plant stands behind them: the trader sells day-ahead energy it will never generate (virtual supply) or buys energy it will never consume (virtual demand), and settles the difference. Both the trader and the location arrive pseudonymised, so this file can never be joined to a named company, a plant or a node \u2014 it powers the Virtual bids panel only.",
-      "stats": [
-        [
-          "Rows (individual curve breakpoints)",
-          "~70 million"
-        ],
-        [
-          "Bid curves (trader \u00d7 node \u00d7 hour \u00d7 side)",
-          "31,370,941"
-        ],
-        [
-          "Distinct pseudonymous traders",
-          "164"
-        ],
-        [
-          "Distinct pseudonymous nodes",
-          "3,519"
-        ],
-        [
-          "Virtual supply bid (hourly average)",
-          "12,159 MW"
-        ],
-        [
-          "Virtual demand bid (hourly average)",
-          "7,564 MW"
-        ],
-        [
-          "Bid at the price floor/cap (price-takers)",
-          "2.3% of MW"
-        ],
-        [
-          "Days covered",
-          "364 (2025-07-01 published empty)"
-        ]
-      ]
-    },
-    {
       "key": "cec_plants",
       "name": "California power plants (CEC)",
       "file": "powerplants.csv",
@@ -345,27 +305,7 @@
     "dam_peak_mw": 58026.0,
     "dam_musttake_share_pct": 70.6
   },
-  "virtual": {
-    "n_traders": 164,
-    "n_nodes": 3519,
-    "n_curves": 31370941,
-    "n_days": 364,
-    "n_hours": 8735,
-    "supply_mwh": 106211634.02235869,
-    "demand_mwh": 66067420.14697875,
-    "supply_avg_mw": 12159.317003132077,
-    "demand_avg_mw": 7563.528351113767,
-    "pricetaker_share_pct": 2.3189414344434254,
-    "top5_share_pct": 30.21580065028255,
-    "top10_share_pct": 44.72155448116075,
-    "conv_hours": 8709,
-    "conv_corr": 0.12850514425197335,
-    "conv_hit_rate_pct": 60.14467791939373,
-    "conv_avg_net_mw": 4596.616815407045,
-    "conv_avg_spread": 0.9315223015462899,
-    "price_floor": -150.0,
-    "price_cap": 1000.0
-  },
+  "virtual": {},
   "earnings": {
     "rtm": {
       "n_bidders": 2497,
@@ -395,6 +335,129 @@
   "reident_dam_corroborated": 75,
   "reident_dam_corroborated_combined": 83,
   "reident_dam_corroborated_magnitude": 67,
+  "local_spike": {
+    "geo_coverage": {
+      "n_resources": 1396,
+      "n_placed": 895,
+      "pct_placed": 64.1,
+      "pct_mw_placed": 69.1,
+      "by_source": {
+        "unplaced": 501,
+        "plant_fuzzy": 494,
+        "plant_name": 312,
+        "node_prefix": 74,
+        "substation": 15
+      }
+    },
+    "markets": {
+      "DAM": {
+        "n_events": 414,
+        "n_plants": 99,
+        "n_plants_screened": 895,
+        "n_event_hours": 463,
+        "n_hours": 8760,
+        "pct_year": 5.29,
+        "prem_pctl": 95.0,
+        "min_lmp": 75.0,
+        "min_mw": 50.0,
+        "min_jump": 10.0,
+        "window_h": 48,
+        "pre_h": 72,
+        "near_k": 5,
+        "near_km": 100.0,
+        "gap_h": 6,
+        "months": {
+          "1": 31,
+          "2": 5,
+          "3": 20,
+          "4": 33,
+          "5": 7,
+          "6": 12,
+          "7": 34,
+          "8": 58,
+          "9": 168,
+          "10": 17,
+          "11": 10,
+          "12": 19
+        }
+      },
+      "RTM": {
+        "n_events": 511,
+        "n_plants": 149,
+        "n_plants_screened": 895,
+        "n_event_hours": 331,
+        "n_hours": 8760,
+        "pct_year": 3.78,
+        "prem_pctl": 99.0,
+        "min_lmp": 150.0,
+        "min_mw": 50.0,
+        "min_jump": 10.0,
+        "window_h": 48,
+        "pre_h": 72,
+        "near_k": 5,
+        "near_km": 100.0,
+        "gap_h": 6,
+        "months": {
+          "1": 20,
+          "2": 7,
+          "3": 35,
+          "4": 48,
+          "5": 23,
+          "6": 27,
+          "7": 40,
+          "8": 115,
+          "9": 127,
+          "10": 34,
+          "11": 15,
+          "12": 20
+        }
+      }
+    },
+    "curves": {
+      "price_grid": [
+        -150,
+        -25,
+        0,
+        10,
+        20,
+        25,
+        30,
+        35,
+        40,
+        50,
+        60,
+        75,
+        100,
+        150,
+        200,
+        250,
+        300,
+        400,
+        500,
+        700,
+        1000
+      ],
+      "min_cap_mw": 1.0,
+      "min_event_hours": 20,
+      "min_t": 3.0,
+      "min_dev": 0.5,
+      "n_plants": {
+        "DAM": 949,
+        "RTM": 1396
+      },
+      "event_scores": {
+        "DAM": 154495,
+        "RTM": 141553
+      },
+      "evsc_min_sd": 0.25,
+      "evsc_min_gap": 1.0,
+      "evsc_min_norm": 100,
+      "median_gap_pct": {
+        "DAM": 7.41,
+        "RTM": 1.09
+      }
+    }
+  },
   "assumptions": [
     "Screen 1 runs on two bid markets you can toggle: real-time (RTM, the default) and day-ahead (DAM). Because the price data is day-ahead, the DAM market lets Screen 1 compare offers against the ACTUAL day-ahead clearing price \u2014 a real impact test \u2014 while RTM keeps the original design.",
     "Screen 1 can define 'how short the grid was' three ways: by outages (how much plant capacity was offline \u2014 the original stand-in), by day-ahead prices (hours when the DAM market price spiked), or by real-time prices (hours whose AVERAGE 5-minute real-time price was in the top 10%). Because that is an hourly average, a single 5-minute spike inside an otherwise cheap hour does not by itself mark the hour scarce. Both price bases use the top 10% of hours at the three CAISO trading hubs; the outage basis needs no price data at all.",
@@ -404,6 +467,7 @@
     "Each offer is a set of (amount, price) steps with prices that only go up; a plant's 'capacity' is the largest amount it offered.",
     "Unmasking (Screen 2) matches a bidder's quiet days against a plant's outage days (three methods: forced, forced+planned, magnitude-aware). Each match is cross-checked against the DAY-AHEAD offers: if the bidder also goes quiet in DAM on the plant's outage days, that is a second, market-independent line of evidence.",
     "Convergence ('virtual') bids are shown as BIDS SUBMITTED, never as positions cleared. CAISO publishes the bid curves but not the awards, so the panel can say how much virtual supply and demand was offered into each hour and which way the layer leaned \u2014 it cannot say how much of it CAISO accepted, and the megawatt-hour figures are therefore offered volume, not settled volume. The trader and the node are both pseudonymised in the source file, so a virtual bid can never be attributed to a company and never settled at its own node price; the day-ahead-minus-real-time gap it is compared against is the SYSTEM price across the three trading hubs. One more consequence of having bids but not awards: the panel reports the direction the money leaned and whether that direction matched the gap that followed, not anyone's profit or loss.",
+    "The local outage-price spike panel uses a GEOGRAPHIC definition of scarcity, unlike every other screen here: an hour is flagged for one plant only when the price at the grid nodes near that plant pulls away from the statewide median by an amount in that plant's own top few percent, while at least 50 MW of its capacity is on a forced outage that began in the previous 48 hours. A statewide heat wave lifts every node together and therefore cannot flag anything on its own, which is the point of the design. The critical limit is that only the OUTAGE side has a location: outage records carry real CAISO resource IDs whose substation code can be geolocated, while bid records carry an anonymous number with no node, zone or coordinate. So the screen says when a local separation happened and at which real plant, and every bidder is then scored against that SET OF HOURS. No bidder in that panel is claimed to be near, owned by, or otherwise connected to the outage that defined the hour.",
     "Earnings are MODELLED, not observed. CAISO's public bid files contain offers only \u2014 no awards, no dispatch, no settlement \u2014 so the panel dispatches each offer curve against the hour's market price by the textbook merit-order rule (a resource produces up to the point where its own offer price meets the clearing price, and is paid that clearing price for every megawatt-hour), then adds self-scheduled megawatts, which are price-takers and clear at any price. Because bids carry no location, every bidder is settled at a regional reference price rather than its own node, and the panel lets you switch between the system average and each of the three trading hubs to see how much that choice moves the answer. The result covers ENERGY only: it excludes ancillary services, capacity and resource-adequacy payments, bilateral hedges, congestion revenue rights, tax credits and fuel costs, so it is not profit and not a full revenue picture."
   ]
 }

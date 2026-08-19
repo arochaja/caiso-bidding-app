@@ -2342,6 +2342,557 @@ if anon_stats:
     )
 
 # =====================================================================
+# Stage 6: which plants bid differently during LOCAL outage-price spikes
+# =====================================================================
+#   THE EVENT IS GEOGRAPHIC, AND THAT IS THE WHOLE POINT. Every other scarcity
+#   definition in this tool is statewide: forced-outage MW in the top decile, or
+#   the system price in the top decile. Those describe a hard afternoon well, but
+#   they are a poor test of any ONE plant, because a heat wave lifts every node at
+#   once and the entire fleet is "scarce" together. This stage uses the strict
+#   reading instead, ported from the price/outage animations in viz/: an hour flags
+#   for a plant only when the price NEAR that plant pulls away from the rest of the
+#   state while that plant's own capacity is sitting offline. A statewide event
+#   cannot by itself clear that bar. See app/spike_local.py for the four conditions
+#   and the thresholds, which are the animations' own, unchanged.
+#
+#   GEOGRAPHY REACHES THE EVENT, NOT THE BIDDER. Outage records carry real CAISO
+#   resource ids (ALTA3A_2_CPCE5), and it is the substation prefix in that id that
+#   makes geolocation possible at all. Bid records carry a bare anonymous integer
+#   (366805) — no node, no zone, no name, and GHG_AREA is null in all 17.7M rows.
+#   So the screen can say WHEN a local separation happened and AT WHICH real plant;
+#   it can NEVER say which anonymous bidder stood near it. What this stage
+#   therefore does is score every bidder against the SET OF HOURS the local screen
+#   produced. Nothing here claims that a listed plant is close to, owned by, or
+#   otherwise connected to the outage that defined the hour. A reader who assumes
+#   proximity will be wrong, and the panel says so.
+#
+#   THE GRAIN IS THE PLANT, NOT THE COMPANY. Screen 1 and the deviation work score
+#   scheduling coordinators; this stage scores RESOURCEBID_SEQ, one anonymous
+#   plant. That is the grain an offer curve actually belongs to — an SC's portfolio
+#   curve is a sum over units with different heat rates and would blur exactly the
+#   shape change we are looking for.
+#
+#   HOUR OF DAY IS NOT OPTIONAL. Local spikes cluster in the evening ramp (the
+#   flagged hours peak at 17:00-19:00), and so does every plant's normal book.
+#   Comparing event hours against a flat annual average would score the daily shape
+#   of the market as if it were a reaction to the event. Each plant is therefore
+#   compared against ITSELF AT THE SAME HOUR OF DAY, and the per-hour differences
+#   are recombined weighted by how many event hours fell in each.
+#
+#   ABSENCE COUNTS. The bid tables hold a row only where a plant actually offered,
+#   so a plant that sits an hour out simply has no row. Left as-is, "offered
+#   nothing" would drop out of the average and a total withdrawal would score as no
+#   change at all — the opposite of the truth. Every plant is expanded onto the
+#   full hourly grid between its first and last active hour and zero-filled, for
+#   the deviation metrics AND for the average curves, so not bidding is scored as
+#   the decision it is. The one exception is the share metric, a ratio of a plant's
+#   own curve that is undefined in an hour with no curve; it uses active hours only.
+#
+#   EACH MARKET IS SCORED AGAINST ITS OWN EVENTS. Day-ahead offers are compared to
+#   day-ahead-defined events, real-time offers to real-time-defined ones, so the
+#   event and the bid always live in the same market. The real-time screen uses a
+#   higher bar than day-ahead (see spike_local.RTM_PCTL): real-time local premiums
+#   are far noisier, and the day-ahead thresholds flag four times as many hours
+#   there for reasons that are mostly noise.
+#
+#   NOT A FINDING. Bidding differently when the local price separates is what a
+#   market is supposed to make people do, and the innocent readings — the unit
+#   itself was derated, a fuel constraint, a hedge rolling off — are neither tested
+#   nor excluded. This is a lead list of plants that departed from their own habit.
+# =====================================================================
+log("Stage 6: local outage-price spike screen + per-plant bid deviation...")
+
+import spike_local  # noqa: E402  (numpy/memmap heavy; kept in its own module)
+
+# Builds the geolocation, the node price surfaces and the screen. The surfaces
+# are cached under CAISO_SCRATCH — the first run reads 2.9 GB for day-ahead and
+# 51 GB for real-time and takes ~30 min; later runs reuse the cache.
+ls_events, ls_hours_df, ls_meta = spike_local.run(markets=("DAM", "RTM"))
+con.register("ls_hours_df", ls_hours_df)
+# One local wall-clock hour occurs twice on the November fall-back date, so the
+# UTC-indexed screen yields two rows for it. Collapse to the app's clock, which
+# is what every bid table is keyed on, taking the hour as an event if either
+# pass flagged it.
+con.execute("""
+create or replace table ls_hours as
+select market, h, extract(hour from h) as hr,
+       max(case when is_event then 1 else 0 end) as is_event,
+       max(n_plants) as n_plants
+from ls_hours_df group by 1, 2, 3
+""")
+
+LS_MIN_EVENT_HOURS = 20  # a plant needs this many event hours before it is scored
+LS_MIN_T = 3.0  # ...and this much signal-to-noise, so thin books do not top the list
+LS_MIN_DEV = 0.5  # ...and the move must be at least half of its own typical swing
+# Two floors that exist only to keep arithmetic artefacts off the list. A plant offering a
+# flat 25 MW into all 8,700 hours has a normal-hour spread near zero, so a rounding-level
+# 0.2 MW change divides out to hundreds of "standard deviations" — true and useless.
+LS_FLOOR_MW = 0.25
+LS_FLOOR_SHARE = 0.01
+LS_MIN_BOOK_MW = 1.0  # and the plant must actually offer a megawatt to be worth ranking
+
+# Bid market paired with the event set defined in that SAME market.
+LS_MARKETS = [("RTM", BIDS, "rh"), ("DAM", DAMB, "rh_dam")]
+
+ls_dev_frames = []
+for ls_mk, _ls_src, ls_tbl in LS_MARKETS:
+    # the plant's own active span, expanded to every hour in it and zero-filled
+    con.execute(f"""
+    create or replace table ls_grid as
+    select g.res, e.h, e.hr, e.is_event,
+           coalesce(s.cap, 0)     as cap_mw,
+           coalesce(s.elev_mw, 0) as elev_mw,
+           case when s.cap > 0 then s.elev_mw / s.cap end as elev_share
+    from (select res, min(h) as h0, max(h) as h1 from {ls_tbl} group by 1) g
+    join ls_hours e on e.market = '{ls_mk}' and e.h >= g.h0 and e.h <= g.h1
+    left join {ls_tbl} s on s.res = g.res and s.h = e.h
+    """)
+    for ls_metric, ls_kind in (("cap_mw", "mw"), ("elev_mw", "mw"), ("elev_share", "share")):
+        ls_floor = LS_FLOOR_SHARE if ls_kind == "share" else LS_FLOOR_MW
+        # the "is this plant big enough to rank" floor applies to megawatt metrics only;
+        # a share is already scale-free
+        ls_book = (
+            ""
+            if ls_kind == "share"
+            else f"and greatest(abs(base_val), abs(event_val)) >= {LS_MIN_BOOK_MW}"
+        )
+        # one cell = one (plant, hour-of-day): event mean, normal mean, normal spread
+        con.execute(f"""
+        create or replace table ls_cell as
+        select res, hr,
+               count({ls_metric})    filter (is_event=1) as n_ev,
+               avg({ls_metric})      filter (is_event=1) as m_ev,
+               count({ls_metric})    filter (is_event=0) as n_bs,
+               avg({ls_metric})      filter (is_event=0) as m_bs,
+               var_samp({ls_metric}) filter (is_event=0) as v_bs
+        from ls_grid group by 1, 2
+        """)
+        ls_dev_frames.append(
+            con.execute(f"""
+            select '{ls_mk}' as market, '{ls_metric}' as metric, res, n_event_hours,
+                   base_val, event_val, diff, sd_self,
+                   diff / nullif(sd_self, 0)                  as dev_sd,
+                   diff / nullif(sd_self * sqrt(se_fac), 0)   as t_stat
+            from (
+              select res,
+                     sum(n_ev)                                              as n_event_hours,
+                     sum(n_ev*m_bs)/nullif(sum(n_ev),0)                     as base_val,
+                     sum(n_ev*m_ev)/nullif(sum(n_ev),0)                     as event_val,
+                     sum(n_ev*(m_ev-m_bs))/nullif(sum(n_ev),0)              as diff,
+                     -- pooled within-hour-of-day spread of the plant's NORMAL hours
+                     sqrt(sum((n_bs-1)*v_bs)
+                          / nullif(sum(case when n_bs>1 then n_bs-1 end),0)) as sd_self,
+                     sum(n_ev*n_ev*(1.0/n_ev + 1.0/n_bs))
+                          / nullif(power(sum(n_ev),2),0)                     as se_fac
+              from ls_cell where n_ev > 0 and n_bs > 1 group by 1
+            )
+            where n_event_hours >= {LS_MIN_EVENT_HOURS} and sd_self >= {ls_floor} {ls_book}
+            """).fetchdf()
+        )
+    log(f"  {ls_mk}: scored {ls_dev_frames[-1].res.nunique():,} plants on the deviation metrics")
+
+ls_dev = pd.concat(ls_dev_frames, ignore_index=True)
+ls_dev["flagged"] = (ls_dev.t_stat.abs() >= LS_MIN_T) & (ls_dev.dev_sd.abs() >= LS_MIN_DEV)
+ls_dev = ls_dev.sort_values(["market", "metric", "dev_sd"], ascending=[True, True, False])
+ls_dev.to_parquet(f"{OUT}/local_spike_bidder.parquet", index=False)
+log(
+    f"  {int(ls_dev.flagged.sum()):,} (plant, metric) deviations clear "
+    f"|t| >= {LS_MIN_T} and |dev| >= {LS_MIN_DEV} of the plant's own spread"
+)
+
+# ---- the offer curves themselves --------------------------------------
+#   THE HEADLINE OF THE PANEL. A deviation metric says a plant moved; a curve says
+#   HOW. Two curves per plant on a shared price grid: what it offers in an ordinary
+#   hour of the same clock hour, and what it offered when the local price separated.
+#   A plant that pulled megawatts off the market and one that kept them on but
+#   repriced them to $900 both "withheld", and only the curve tells them apart.
+#
+#   The grid is denser where the offers are. The median energy step is priced near
+#   $32 and three quarters sit under $60, so an evenly-spaced grid would spend most
+#   of its resolution on an empty $300-$1,000 stretch and blur the part that moves.
+CV_GRID = [
+    -150,
+    -25,
+    0,
+    10,
+    20,
+    25,
+    30,
+    35,
+    40,
+    50,
+    60,
+    75,
+    100,
+    150,
+    200,
+    250,
+    300,
+    400,
+    500,
+    700,
+    1000,
+]
+CV_MIN_CAP = 1.0  # MW: below this a curve is not worth drawing
+con.execute("create or replace table cv_grid as select unnest(?::double[]) as price", [CV_GRID])
+
+# floors for the per-event unusualness score (see the block at the end of the loop)
+EVSC_MIN_NORM = 100  # ordinary hours needed before a plant has a distribution at all
+EVSC_MIN_SD = 0.25  # ...and it must actually vary by this much of its own box
+EVSC_MIN_GAP = 1.0  # ...and the event's departure must itself reach this
+
+con.register("ls_ev_tbl", ls_events)
+cv_avg_frames, cv_rank_frames, cv_step_frames, ev_score_frames = [], [], [], []
+for ls_mk, ls_src_file, ls_tbl in LS_MARKETS:
+    # one row per (plant, hour, price level) — the curve's own steps, as filed
+    con.execute(f"""
+    create or replace table cv_step as
+    select RESOURCEBID_SEQ as res, cast(STARTTIME as timestamp) as h,
+           SCH_BID_Y1AXISDATA as y, max(SCH_BID_XAXISDATA) as x
+    from read_parquet('{ls_src_file}')
+    where MARKETPRODUCTTYPE='EN' and RESOURCE_TYPE='GENERATOR'
+      and SCH_BID_XAXISDATA is not null and SCH_BID_Y1AXISDATA is not null
+      and SCH_BID_XAXISDATA > 0
+    group by 1, 2, 3
+    """)
+    # A filed curve is CUMULATIVE — its x is total MW offered up to that price — so
+    # the incremental megawatts of each step are the difference from the step below.
+    # Summing x directly across steps would count the same megawatt many times.
+    con.execute("""
+    create or replace table cv_inc as
+    select res, h, y,
+           x - coalesce(lag(x) over (partition by res, h order by y), 0) as dx
+    from cv_step
+    """)
+    # Rebuild ls_grid for this market: it is the zero-filled span that makes the
+    # denominators below count hours the plant SAT OUT as a zero curve.
+    con.execute(f"""
+    create or replace table ls_grid as
+    select g.res, e.h, e.hr, e.is_event
+    from (select res, min(h) as h0, max(h) as h1 from {ls_tbl} group by 1) g
+    join ls_hours e on e.market = '{ls_mk}' and e.h >= g.h0 and e.h <= g.h1
+    """)
+    con.execute("""
+    create or replace table cv_denom as
+    select res, hr, is_event, count(*) as n_hours from ls_grid group by 1, 2, 3
+    """)
+    # Hours in which the plant actually filed a curve, as opposed to hours it was
+    # simply inside its own active span. The two denominators answer two different
+    # questions and the panel needs both — see cv_avg below.
+    con.execute("""
+    create or replace table cv_act as
+    select e.res, e.hr, e.is_event, count(*) as n_act
+    from ls_grid e
+    join (select distinct res, h from cv_inc) i on i.res = e.res and i.h = e.h
+    group by 1, 2, 3
+    """)
+    # Keep only hours of the day the plant spans in BOTH regimes — otherwise a plant
+    # that only ever bids at 18:00 has its 18:00 event curve compared against an
+    # all-day normal. Weights are the event hours' own hour-of-day mix.
+    con.execute("""
+    create or replace table cv_w as
+    select d1.res, d1.hr, d1.n_hours as n_event, d0.n_hours as n_norm,
+           coalesce(a1.n_act, 0) as n_event_act, coalesce(a0.n_act, 0) as n_norm_act
+    from cv_denom d1
+    join cv_denom d0 on d0.res = d1.res and d0.hr = d1.hr and d0.is_event = 0
+    left join cv_act a1 on a1.res = d1.res and a1.hr = d1.hr and a1.is_event = 1
+    left join cv_act a0 on a0.res = d1.res and a0.hr = d1.hr and a0.is_event = 0
+    where d1.is_event = 1 and d1.n_hours > 0 and d0.n_hours > 0
+    """)
+    # MW offered at or below each grid price, summed over the hours of each cell
+    con.execute("""
+    create or replace table cv_cell as
+    select b.res, b.hr, b.is_event, g.price, sum(b.dx_sum) as sum_mw
+    from (
+      select i.res, e.hr, e.is_event, i.y, sum(i.dx) as dx_sum
+      from cv_inc i join ls_grid e on e.res = i.res and e.h = i.h
+      group by 1, 2, 3, 4
+    ) b
+    join cv_grid g on g.price >= b.y
+    group by 1, 2, 3, 4
+    """)
+    # Every (plant, hour-of-day) cell must appear at every grid price, INCLUDING the
+    # cells where the plant filed no curve at all. Aggregating cv_cell directly would
+    # weight each plant only by the hours of the day it happened to bid in: a peaker
+    # that files one curve at midnight and nothing else has a single surviving cell,
+    # its weights cancel, and its midnight curve is published as if it were the
+    # plant's whole day. That inflated the top of the ranking by more than an order
+    # of magnitude (one plant read 3.6 MW -> 83.5 MW when its true hour-matched means
+    # were 1.16 and 1.12). The cross join restores the zeros the zero-fill intends,
+    # and it is also what draws a curve starting at $20 from zero at the left edge
+    # rather than beginning in mid-air.
+    con.execute("""
+    create or replace table cv_pt as
+    select w.res, w.hr, g.price, w.n_event as wt,
+           w.n_norm_act, w.n_event_act,
+           -- the active-hours weight is the event hours the plant actually bid in
+           w.n_event_act as wt_act,
+           coalesce(c0.sum_mw, 0) as sum_no, coalesce(c1.sum_mw, 0) as sum_ev,
+           coalesce(c0.sum_mw, 0) / w.n_norm  as mw_no,
+           coalesce(c1.sum_mw, 0) / w.n_event as mw_ev
+    from cv_w w
+    cross join cv_grid g
+    left join cv_cell c0
+      on c0.res=w.res and c0.hr=w.hr and c0.price=g.price and c0.is_event=0
+    left join cv_cell c1
+      on c1.res=w.res and c1.hr=w.hr and c1.price=g.price and c1.is_event=1
+    """)
+    # TWO AVERAGES, BECAUSE THERE ARE TWO QUESTIONS.
+    #   mw_normal / mw_event divide by EVERY hour in the regime, so an hour the plant
+    #   sat out enters as a zero curve. That is the right measure of "did this plant
+    #   change what it brought to the market", and it is what the deviation metrics
+    #   above agree with — but it is not a curve anyone submitted. A plant that offers
+    #   100 MW on a third of days shows up as a 33 MW line.
+    #   mw_normal_act / mw_event_act divide by only the hours it actually filed a
+    #   curve, so they show the SHAPE of its offer when it does bid, which is what can
+    #   legitimately be laid next to a single event's submitted curve.
+    #   Read together they separate the two ways of bidding differently: showing up
+    #   less often, and offering different terms when you do.
+    con.execute("""
+    create or replace table cv_avg as
+    select p.res, p.price,
+           sum(p.wt*p.mw_no)/nullif(sum(p.wt),0) as mw_normal,
+           sum(p.wt*p.mw_ev)/nullif(sum(p.wt),0) as mw_event,
+           sum(case when p.n_norm_act  > 0 then p.wt_act * p.sum_no / p.n_norm_act  end)
+             / nullif(sum(case when p.n_norm_act  > 0 then p.wt_act end), 0) as mw_normal_act,
+           sum(case when p.n_event_act > 0 then p.wt_act * p.sum_ev / p.n_event_act end)
+             / nullif(sum(case when p.n_event_act > 0 then p.wt_act end), 0) as mw_event_act
+    from cv_pt p group by 1, 2
+    """)
+    cv_avg_frames.append(
+        con.execute(f"""
+        select '{ls_mk}' as market, a.res, s.sc, coalesce(s.is_storage, false) as is_storage,
+               a.price, a.mw_normal, a.mw_event,
+               a.mw_normal_act, a.mw_event_act
+        from cv_avg a
+        left join (select res, min(sc) as sc, bool_or(is_storage) as is_storage
+                   from {ls_tbl} group by 1) s using (res)
+        where a.res in (select res from cv_avg group by res
+                        having max(mw_normal_act) >= {CV_MIN_CAP}
+                            or max(mw_event_act) >= {CV_MIN_CAP})
+        order by a.res, a.price
+        """).fetchdf()
+    )
+    # HOW DIFFERENT IS THE SHAPE? The area between the two curves, in MW x $, over
+    # the box the curve lives in (its own peak MW x the grid's price span).
+    # Scale-free, so a 9 MW plant and a 900 MW one are comparable, and it counts a
+    # pure reprice — which leaves peak MW untouched — as the change it is.
+    cv_rank_frames.append(
+        con.execute(f"""
+        select '{ls_mk}' as market, a.res, s.sc,
+               coalesce(max(s.is_storage), false) as is_storage,
+               max(a.mw_normal) as cap_normal, max(a.mw_event) as cap_event,
+               sum(abs(a.mw_event - a.mw_normal) * wdt) as area_mw_dollars,
+               -- share of the box: 0% = identical shapes, 100% = the two curves
+               -- have nothing in common anywhere on the price axis
+               100.0 * sum(abs(a.mw_event - a.mw_normal) * wdt)
+                     / nullif((greatest(max(a.mw_normal), max(a.mw_event))
+                               - least(min(a.mw_normal), min(a.mw_event), 0))
+                              * {CV_GRID[-1] - CV_GRID[0]}, 0) as gap_pct,
+               -- signed: negative = the plant offered LESS / priced HIGHER in events
+               sum((a.mw_event - a.mw_normal) * wdt) as signed_area,
+               max(a.mw_normal_act) as cap_normal_act,
+               max(a.mw_event_act)  as cap_event_act,
+               -- the same shape gap measured on the curves the plant DID file, so a
+               -- plant that simply bid less often does not read as one that repriced
+               100.0 * sum(abs(a.mw_event_act - a.mw_normal_act) * wdt)
+                     / nullif((greatest(max(a.mw_normal_act), max(a.mw_event_act))
+                               - least(min(a.mw_normal_act), min(a.mw_event_act), 0))
+                              * {CV_GRID[-1] - CV_GRID[0]}, 0) as gap_pct_active,
+               -- how often it showed up at all, on the same hour-of-day weighting
+               max(w.part_normal) as part_normal,
+               max(w.part_event)  as part_event,
+               max(w.n_event_bid) as n_event_bid,
+               max(w.n_norm_bid)  as n_norm_bid,
+               max(w.n_event) as n_event_hours
+        from (select res, price, mw_normal, mw_event, mw_normal_act, mw_event_act,
+                     coalesce(lead(price) over (partition by res order by price), price)
+                       - price as wdt
+              from cv_avg) a
+        join (select res, sum(n_event) as n_event,
+                     -- hours the plant ACTUALLY filed a curve in. The shape comparison
+                     -- rests entirely on these, and a plant that bid in three event
+                     -- hours out of four hundred can post a huge "shape gap" built from
+                     -- almost nothing. Published so the panel can require a real sample.
+                     sum(n_event_act) as n_event_bid,
+                     sum(n_norm_act)  as n_norm_bid,
+                     sum(n_norm_act)  / nullif(cast(sum(n_norm)  as double), 0) as part_normal,
+                     sum(n_event_act) / nullif(cast(sum(n_event) as double), 0) as part_event
+              from cv_w group by 1) w on w.res = a.res
+        left join (select res, min(sc) as sc, bool_or(is_storage) as is_storage
+                   from {ls_tbl} group by 1) s on s.res = a.res
+        group by 1, 2, 3
+        having greatest(max(a.mw_normal_act), max(a.mw_event_act)) >= {CV_MIN_CAP}
+           and max(w.n_event) >= {LS_MIN_EVENT_HOURS}
+        order by gap_pct desc
+        """).fetchdf()
+    )
+    # The individual event hours as raw filed steps — no grid, no averaging. This is
+    # what "the curve submitted during THIS event" means; the dashboard slices it by
+    # the event's own local start/end window.
+    cv_step_frames.append(
+        con.execute(f"""
+        select '{ls_mk}' as market, t.res, t.h, t.y as price, t.x as mw
+        from (
+          select st.res, st.h, st.y,
+                 max(st.x) over (partition by st.res, st.h order by st.y) as x
+          from cv_step st
+          join ls_hours e on e.market = '{ls_mk}' and e.h = st.h and e.is_event = 1
+        ) t
+        where t.res in (select res from cv_step group by res having max(x) >= {CV_MIN_CAP})
+        order by t.res, t.h, t.y
+        """).fetchdf()
+    )
+    log(
+        f"  {ls_mk}: curves for {cv_rank_frames[-1].res.nunique():,} plants, "
+        f"{len(cv_step_frames[-1]):,} filed steps inside event hours"
+    )
+
+    # ---- HOW UNUSUAL WAS THIS PARTICULAR BID? -----------------------------
+    #   The ranking above is pooled over every event hour, which answers "did this plant
+    #   behave differently during spikes in general". It cannot answer the question an
+    #   auditor actually asks in front of one episode: of everything filed into THIS
+    #   event, what looks least like its author's own habit?
+    #
+    #   So each filed curve is scored on its own. For every hour a plant bid, we measure
+    #   the area between the curve it filed and that plant's own average curve FOR THAT
+    #   HOUR OF DAY, normalised by the plant's own size so a 9 MW unit and a 900 MW one
+    #   are comparable. That yields a distribution, per plant, of how far it normally
+    #   strays from itself — and the event's curve is then placed inside that distribution.
+    #   "More unusual than 99% of its own ordinary hours" is a statement that survives
+    #   the plant being naturally erratic; a raw megawatt difference is not.
+    #
+    #   TWO FLOORS, AND THEY MATTER. A plant that files a byte-identical curve every hour
+    #   has a spread of zero, so any rounding-level difference is simultaneously its
+    #   largest deviation ever and completely uninformative — before these floors the top
+    #   of the list was plants whose "record departure" was an area of 9.9 MW x $, with
+    #   z-scores of 1e16. A plant must therefore vary by at least EVSC_MIN_SD of its own
+    #   box before it can be scored at all, and the event's departure must itself reach
+    #   EVSC_MIN_GAP. Together they drop about a quarter of the candidate pairs.
+    con.execute("""
+    create or replace table hg_cap as
+    select res, max(x) as cap_mw from cv_step group by 1
+    """)
+    # what each plant filed in each hour, on the shared grid
+    con.execute("""
+    create or replace table hg_hour as
+    select i.res, i.h, g.price, sum(i.dx) as mw
+    from cv_inc i join cv_grid g on g.price >= i.y
+    group by 1, 2, 3
+    """)
+    # ...and its ordinary-hours average curve at that hour of day
+    con.execute(f"""
+    create or replace table hg_norm as
+    select c.res, e.hr, c.price, avg(c.mw) as mw
+    from hg_hour c join ls_hours e on e.market='{ls_mk}' and e.h = c.h and e.is_event = 0
+    group by 1, 2, 3
+    """)
+    con.execute(f"""
+    create or replace table hg_gap as
+    select c.res, c.h, e.is_event,
+           100.0 * sum(abs(c.mw - coalesce(n.mw, 0)) * w.wdt)
+                 / nullif(any_value(cap.cap_mw) * {CV_GRID[-1] - CV_GRID[0]}, 0) as gp,
+           -- negative = the plant offered LESS, or priced the same megawatts higher,
+           -- than it ordinarily does at this hour of the day
+           100.0 * sum((c.mw - coalesce(n.mw, 0)) * w.wdt)
+                 / nullif(any_value(cap.cap_mw) * {CV_GRID[-1] - CV_GRID[0]}, 0) as gp_signed,
+           max(c.mw) as peak_mw
+    from hg_hour c
+    join ls_hours e on e.market='{ls_mk}' and e.h = c.h
+    join hg_cap cap on cap.res = c.res and cap.cap_mw >= {CV_MIN_CAP}
+    join (select price, coalesce(lead(price) over (order by price), price) - price as wdt
+          from cv_grid) w on w.price = c.price
+    left join hg_norm n on n.res = c.res and n.hr = e.hr and n.price = c.price
+    group by 1, 2, 3
+    """)
+    # the plant's own yardstick: how far it strays from itself in ORDINARY hours
+    con.execute("""
+    create or replace table hg_stat as
+    select res, count(*) as n_norm, avg(gp) as gp_norm, stddev_samp(gp) as sd_norm,
+           avg(peak_mw) as peak_mw_norm
+    from hg_gap where is_event = 0 group by 1
+    """)
+    con.execute(f"""
+    create or replace table hg_ev as
+    select v.event_id, g.res, count(*) as n_hours_bid,
+           avg(g.gp) as gap_pct_event, avg(g.gp_signed) as gap_signed_event,
+           max(g.peak_mw) as peak_mw_event
+    -- date_trunc on the START is not cosmetic. A real-time event is a run of 5-minute
+    -- intervals, so it can begin at 19:20 and end at 19:55 — and the bid tables are
+    -- HOURLY, stamped 19:00. Comparing an hourly timestamp against the raw window drops
+    -- every such event on the floor: it silently scored nothing in 203 of the 511
+    -- real-time events before this.
+    from ls_ev_tbl v join hg_gap g
+      on v.market='{ls_mk}' and g.is_event = 1
+     and g.h between date_trunc('hour', v.start_local) and v.end_local
+    group by 1, 2
+    """)
+    # Where the event's departure falls inside the plant's own distribution. Ranking the
+    # event values together with the ordinary ones is exact and costs one sort; comparing
+    # each event value against every ordinary hour would be a 10^8-row join.
+    con.execute("""
+    create or replace table hg_pctl as
+    with pool as (
+      select res, gp, cast(null as varchar) as event_id from hg_gap where is_event = 0
+      union all
+      select res, gap_pct_event as gp, event_id from hg_ev
+    )
+    select res, event_id, percent_rank() over (partition by res order by gp) as pctl_vs_own
+    from pool qualify event_id is not null
+    """)
+    ev_score_frames.append(
+        con.execute(f"""
+        select '{ls_mk}' as market, e.event_id, e.res, c.cap_mw, e.n_hours_bid,
+               e.gap_pct_event, e.gap_signed_event, e.peak_mw_event,
+               s.peak_mw_norm, s.gp_norm, s.sd_norm, s.n_norm,
+               p.pctl_vs_own,
+               (e.gap_pct_event - s.gp_norm) / nullif(s.sd_norm, 0) as z_vs_own
+        from hg_ev e
+        join hg_pctl p on p.res = e.res and p.event_id = e.event_id
+        join hg_stat s on s.res = e.res
+        join hg_cap  c on c.res = e.res
+        where s.n_norm >= {EVSC_MIN_NORM}
+          and s.sd_norm >= {EVSC_MIN_SD}
+          and e.gap_pct_event >= {EVSC_MIN_GAP}
+        order by z_vs_own desc
+        """).fetchdf()
+    )
+    log(
+        f"  {ls_mk}: {len(ev_score_frames[-1]):,} (event, plant) bids scored for unusualness "
+        f"across {ev_score_frames[-1].event_id.nunique():,} events"
+    )
+
+pd.concat(cv_avg_frames, ignore_index=True).to_parquet(
+    f"{OUT}/local_spike_curve_avg.parquet", index=False
+)
+cv_rank = pd.concat(cv_rank_frames, ignore_index=True)
+cv_rank.to_parquet(f"{OUT}/local_spike_curve_rank.parquet", index=False)
+ev_score = pd.concat(ev_score_frames, ignore_index=True)
+ev_score.to_parquet(f"{OUT}/local_spike_event_bidder.parquet", index=False)
+pd.concat(cv_step_frames, ignore_index=True).to_parquet(
+    f"{OUT}/local_spike_curve_steps.parquet", index=False
+)
+ls_meta["curves"] = dict(
+    price_grid=CV_GRID,
+    min_cap_mw=CV_MIN_CAP,
+    min_event_hours=LS_MIN_EVENT_HOURS,
+    min_t=LS_MIN_T,
+    min_dev=LS_MIN_DEV,
+    n_plants={m: int(g.res.nunique()) for m, g in cv_rank.groupby("market")},
+    event_scores={m: int(len(g)) for m, g in ev_score.groupby("market")},
+    evsc_min_sd=EVSC_MIN_SD,
+    evsc_min_gap=EVSC_MIN_GAP,
+    evsc_min_norm=EVSC_MIN_NORM,
+    median_gap_pct={m: round(float(g.gap_pct.median()), 2) for m, g in cv_rank.groupby("market")},
+)
+with open(f"{OUT}/local_spike_meta.json", "w") as f:
+    json.dump(ls_meta, f, indent=2, default=str)
+log(
+    "  median curve gap: "
+    + ", ".join(f"{m} {v}%" for m, v in ls_meta["curves"]["median_gap_pct"].items())
+)
+
+# =====================================================================
 # meta.json
 # =====================================================================
 overview = con.execute("""
@@ -2434,6 +2985,7 @@ meta = dict(
     reident_dam_corroborated=dam_corr_forced,
     reident_dam_corroborated_combined=dam_corr_comb,
     reident_dam_corroborated_magnitude=dam_corr_mag,
+    local_spike=ls_meta,
     assumptions=[
         "Screen 1 runs on two bid markets you can toggle: real-time (RTM, the default) and day-ahead (DAM). Because the price data is day-ahead, the DAM market lets Screen 1 compare offers against the ACTUAL day-ahead clearing price — a real impact test — while RTM keeps the original design.",
         "Screen 1 can define 'how short the grid was' three ways: by outages (how much plant capacity was offline — the original stand-in), by day-ahead prices (hours when the DAM market price spiked), or by real-time prices (hours whose AVERAGE 5-minute real-time price was in the top 10%). Because that is an hourly average, a single 5-minute spike inside an otherwise cheap hour does not by itself mark the hour scarce. Both price bases use the top 10% of hours at the three CAISO trading hubs; the outage basis needs no price data at all.",
@@ -2443,6 +2995,7 @@ meta = dict(
         "Each offer is a set of (amount, price) steps with prices that only go up; a plant's 'capacity' is the largest amount it offered.",
         "Unmasking (Screen 2) matches a bidder's quiet days against a plant's outage days (three methods: forced, forced+planned, magnitude-aware). Each match is cross-checked against the DAY-AHEAD offers: if the bidder also goes quiet in DAM on the plant's outage days, that is a second, market-independent line of evidence.",
         "Convergence ('virtual') bids are shown as BIDS SUBMITTED, never as positions cleared. CAISO publishes the bid curves but not the awards, so the panel can say how much virtual supply and demand was offered into each hour and which way the layer leaned — it cannot say how much of it CAISO accepted, and the megawatt-hour figures are therefore offered volume, not settled volume. The trader and the node are both pseudonymised in the source file, so a virtual bid can never be attributed to a company and never settled at its own node price; the day-ahead-minus-real-time gap it is compared against is the SYSTEM price across the three trading hubs. One more consequence of having bids but not awards: the panel reports the direction the money leaned and whether that direction matched the gap that followed, not anyone's profit or loss.",
+        "The local outage-price spike panel uses a GEOGRAPHIC definition of scarcity, unlike every other screen here: an hour is flagged for one plant only when the price at the grid nodes near that plant pulls away from the statewide median by an amount in that plant's own top few percent, while at least 50 MW of its capacity is on a forced outage that began in the previous 48 hours. A statewide heat wave lifts every node together and therefore cannot flag anything on its own, which is the point of the design. The critical limit is that only the OUTAGE side has a location: outage records carry real CAISO resource IDs whose substation code can be geolocated, while bid records carry an anonymous number with no node, zone or coordinate. So the screen says when a local separation happened and at which real plant, and every bidder is then scored against that SET OF HOURS. No bidder in that panel is claimed to be near, owned by, or otherwise connected to the outage that defined the hour.",
         "Earnings are MODELLED, not observed. CAISO's public bid files contain offers only — no awards, no dispatch, no settlement — so the panel dispatches each offer curve against the hour's market price by the textbook merit-order rule (a resource produces up to the point where its own offer price meets the clearing price, and is paid that clearing price for every megawatt-hour), then adds self-scheduled megawatts, which are price-takers and clear at any price. Because bids carry no location, every bidder is settled at a regional reference price rather than its own node, and the panel lets you switch between the system average and each of the three trading hubs to see how much that choice moves the answer. The result covers ENERGY only: it excludes ancillary services, capacity and resource-adequacy payments, bilateral hedges, congestion revenue rights, tax credits and fuel costs, so it is not profit and not a full revenue picture.",
     ],
 )
