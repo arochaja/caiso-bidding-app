@@ -354,14 +354,23 @@ def build_dam_surface(con):
         f"    matrix {grid.shape}, {100 * np.isfinite(grid).mean():.1f}% populated"
         f"{f', {blank} hours with no published price' if blank else ''}"
     )
+    # Write to a temp path and rename into place. The cache is trusted purely because
+    # the file exists, and this single write lands at the END of a 2.9 GB read — so an
+    # interruption there (OOM kill, full disk, Ctrl-C) would otherwise leave a truncated
+    # .npz that still satisfies the existence check and gets reused as if it were good.
+    # os.replace is atomic within a filesystem, so the cache is either absent or whole.
+    # The real-time path is already safe by construction: it guards on TWO files and
+    # writes its meta only after the fill loop completes.
+    _tmp = DAM_CACHE + ".partial.npz"
     np.savez_compressed(
-        DAM_CACHE,
+        _tmp,
         grid=grid,
         lat=nodes.latitude.values.astype(np.float32),
         lon=nodes.longitude.values.astype(np.float32),
         node_id=nodes.name.values.astype(str),
         spine=spine.values.astype("datetime64[ns]"),
     )
+    os.replace(_tmp, DAM_CACHE)
 
 
 def _rtm_groups():
