@@ -9,3 +9,9 @@
 # ruff is listed here too for editor integration and manual `ruff check` runs.
 ruff==0.15.21
 pre-commit==4.3.0
+
+# Stage 6 (app/spike_local.py) only — geolocating outage resources against the CEC
+# plant list and CAISO's node file. Not imported by the dashboard, so they stay out
+# of requirements.txt and the Streamlit Cloud deploy.
+rapidfuzz==3.13.0
+xlrd==2.0.1

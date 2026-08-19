@@ -1,0 +1,495 @@
+rid,outage_name,matched_cec_plant,pmax,cec_cap
+ALTA3A_2_CPCE8,Alta Wind 8,Alta I Wind Energy Center,150.0,150.0
+ASTORA_2_SOLAR2,Astoria 2,RE Astoria 2,75.0,75.0
+BALCHS_7_UNIT 1,BALCH 1 PH UNIT 1,Balch #1,31.0,34.0
+COCOPP_2_CTG1,Marsh Landing 1,Marsh Landing Generating Station,204.2,828.0
+CRESTA_7_PL1X2,CRESTA PH UNIT 1 & 2 AGGREGATE,Cresta,70.4,70.0
+DONNLS_7_UNIT,Donnells Hydro,Donnells,72.0,72.0
+ELKHIL_2_PL1X3,ELK HILLS COMBINED CYCLE (AGGREGATE),Elk Hills Power  LLC,551.7,567.0
+GASKW1_2_GW3SR1,Gaskell West 3,Gaskell West 1,20.0,20.0
+GUERNS_6_HD3BM3,Hanford Digester Genset 3,Hanford Digester Genset 2 (CAISO),1.0,1.02
+HATRDG_2_WIND,Hatchet Ridge Wind Farm,"Hatchet Ridge Wind, LLC",102.0,101.2
+HELMPG_7_UNIT 1,HELMS PUMP-GEN UNIT 1,Helms (Pumped Storage),407.0,1212.0
+HERDLN_6_BYHSR1,Byron Highway Solar,Byron Highway Solar (CAISO),5.0,5.0
+HUMBPP_6_UNITS,Humboldt Bay Generating Station 1,Humboldt Bay,97.62,167.0
+INYOKN_1_IKSSR1,Inyokern Solar 1203,Inyokern Solar 1203 (CAISO),19.9,19.9
+KERNEY_6_FCSSR1,Fresno Community Solar,Fresno Community Solar (CAISO),10.0,10.0
+KERRGN_1_UNIT 1,KERN RIVER HYDRO UNITS 1-4 AGGREGATE,Kern River 1,25.6,24.8
+LMEC_1_PL1X3,Los Medanos Energy Center AGGREGATE,Los Medanos Energy Center,580.0,594.0
+PHOENX_1_UNIT,PHOENIX PH,Phoenix,2.0,1.6
+PIOPIC_2_CTG2,Pio Pico Unit 2,Pio Pico Energy Center,112.7,336.0
+PIT7_7_UNIT 2,PIT PH 7 UNIT 2,Pit #1,54.6,63.0
+SPRGVL_2_TULESC,TULE RIVER HYDRO PLANT (SCE),Tule River,2.5,2.52
+SUNRIS_2_PL1X3,Sunrise Power Project AGGREGATE II,Sunrise Power,586.02,572.0
+TIGRCK_7_UNITS,TIGER CREEK HYDRO AGGREGATE,Tiger Creek,62.0,60.0
+TX-ELK_6_ECKSR2,Eagle Creek,Eagle Creek (CAISO),3.0,3.0
+VISTRA_5_DALBT4,Dallas Energy Storage 4,Dallas Energy Storage,100.0,400.0
+ALAMIT_7_UNIT 5,ALAMITOS GEN STA. UNIT 5,Alamitos Energy Center,480.0,693.0
+VISTRA_5_PLABT4,Plano Storage 4,Plano Storage,74.6,350.0
+TANHIL_6_SOLART,Berry Cogen 18,Berry Cogen 21Z,17.0,5.7
+SLATE_2_SLASR2,SLATE_2,Slate,93.0,140.3
+HENRTS_1_SOLAR,Henrietta Solar Project,Henrietta Solar Facility,100.0,100.0
+SLRMS3_2_SRMSR1,SILVER RIDGE MOUNT SIGNAL 3,Silver Ridge Mount Signal 2 (CAISO),250.0,150.0
+DRACKR_2_DS3SR3,Dracker Solar Unit 3,Dracker Solar Unit 2 BESS,125.0,115.0
+JOANEC_2_STABT1,Santa Ana Storage 1,Santa Ana 1,20.0,3.2
+PIT1_7_UNIT 2,PIT PH 1 UNIT 2,Pit #1,32.0,63.0
+SISPRG_2_DS3BT2,Daggett Solar 3 b BESS,Daggett Solar 1 BESS,60.0,113.5
+DUTCH1_7_UNIT 1,DUTCH FLAT 1 PH,Dutch Flat #1,22.0,22.0
+VLCNTR_6_VCSLR1,Valley Center 1,Valley Center 1 & 2,2.5,7.5
+ATHOS_5_AP1X2,Athos Power Plant,Athos I,250.0,250.0
+COVERD_2_HCKHY1,HATCHET CREEK,Hatchet Creek Project,6.89,7.0
+ELDORO_7_UNIT 2,El Dorado Unit 2,El Dorado,11.0,20.0
+GASKW1_2_GW4SR1,Gaskell West 4,Gaskell West 1,20.0,20.0
+SUNSPT_2_WNASR1,Windhub Solar A,Windhub Solar A (CAISO),20.0,20.0
+KANSAS_6_SOLAR,RE Kansas South,Kansas South,20.0,20.0
+MELRSE_6_MELBT1,Melrose BESS 1,Melrose BESS,10.0,20.0
+WALCRK_2_CTG5,Walnut Creek Energy Park Unit 5,Walnut Creek Energy Park,100.1,500.5
+TWISSL_6_SOLAR1,Coronal Lost Hills,Coronal Lost Hills Solar,20.0,20.0
+CRELMN_6_RAMON1,Ramona 1,Ramona Solar Energy Facility,2.0,4.9
+LCKHT1_2_LH1SR1,Lockhart Solar 1 PV,Lockhart Solar 1 PV (CAISO),85.0,85.0
+VESTAL_2_TS5SR1,Tulare Solar 5,MM Tulare Energy LLC,55.83,1.8
+MCARTH_6_FRIVRB,Fall River Mills Project B,Fall River Mills Project A & B,1.5,3.0
+TULRLK_6_UTASR1,Utica Avenue Solar,Utica Avenue Solar (CAISO),3.0,3.0
+ANAHM_2_CANYN1,CANYON POWER PLANT UNIT 1,Canyon Power Plant,49.21,200.48
+ANAHM_2_CANYN3,CANYON POWER PLANT UNIT 3,Canyon Power Plant,46.49,200.48
+CARBOU_7_PL4X5,CARIBOU PH 2 UNIT 4 & 5 AGGREGATE,Caribou #2,120.0,120.0
+CUMBIA_1_SOLAR,Columbia Solar Energy II,Columbia Solar Energy LLC,19.0,19.0
+ESCNDO_6_EB2BT2,Escondido BESS 2,Escondido Energy Storage,10.0,30.0
+GRNLF1_1_PL1X2,Greenleaf 1,Greenleaf 2  Inc.,49.2,50.0
+INYOKN_1_IKSSR2,Inyokern Solar 1281,Inyokern Solar 1281 (CAISO),11.9,11.9
+KINGRV_7_UNIT 1,KINGS RIVER HYDRO UNIT 1,Kings River,51.2,52.0
+LEPRFD_1_KANSAS,Kansas,Kansas LLC,20.0,20.0
+ORMOND_7_UNIT 1,ORMOND BEACH GEN STA. UNIT 1,Ormond Beach Generating Station,741.27,1612.8
+PEORIA_1_SOLAR,Sonora 1,Sonora Solar Facility,1.5,50.0
+PIOPIC_2_CTG1,Pio Pico Unit 1,Pio Pico Energy Center,111.3,336.0
+PIT7_7_UNIT 1,PIT PH 7 UNIT 1,Pit #1,55.7,63.0
+PROXSR_2_PS1SR2,Proxima Solar 1B,Proxima Solar BESS,69.74,162.0
+REXFRD_2_RSFSX2,Rexford Solar Farm,Project Rexford,300.0,300.0
+RTEDDY_2_RWSBT5,Rosamond West Solar Central BESS C,Rosamond West Solar Central BESS,12.0,147.0
+RTREE_2_WIND2,Rising Tree 2,Rising Tree Wind Farm II,19.8,19.8
+SANDLT_2_SUNITS,Mojave Solar,Mojave Solar Project,275.0,250.0
+SHANDN_2_SBBBM1,San Bernardino Biogas,San Bernardino Biogas (CAISO),2.6,2.6
+SPRGAP_1_UNIT 1,SPRING GAP HYDRO,Spring Gap,7.0,6.0
+TAHOE_2_THOBT3,Tahoe 3,Tahoe,110.1,279.0
+TEHAPI_2_PW2WD2,Point Wind 2,Point Wind,14.4,64.5
+TX-ELK_6_SOLAR1,Castor,Castor Solar Project,1.5,1.5
+VALTNE_2_TSBBT2,Tropico Solar B,Tropico,22.0,14.0
+WADHAM_6_UNIT,Wadham Energy LP,Wadham,29.07,29.0
+WEEDPC_6_KNSSR1,Kern Sunset,Kern Sunset (CAISO),2.37,2.37
+WSTWND_2_M90WD2,Mojave 90,Mojave 89 BESS 2B,64.82,70.6
+KNGCTY_6_UNITA1,"King City Energy Center, Unit 1",King City Cogen Plant,44.6,130.0
+KELYRG_6_UNIT,KELLY RIDGE HYDRO,Kelly Ridge,11.0,10.0
+MRGT_6_MMAREF,Miramar Energy Facility,Miramar Energy Facility 1 & 2,45.0,95.0
+BIOMAS_1_UNIT 1,WOODLAND BIOMASS,Woodland Biomass Power Ltd,25.5,28.0
+NWCSTL_7_UNIT 1,NEWCASTLE HYDRO,Newcastle,12.0,11.5
+LMBEPK_2_UNITA2,"Creed Energy Center, Unit #1",Creed Energy Center,47.6,48.1
+CABZON_1_WINDA1,Cabazon Wind Project,Cabazon Wind,41.0,38.85
+SGREGY_6_SANGER,Algonquin Power Sanger 2,Algonquin Power Sanger LLC,48.3,39.8
+SIGHEB_6_HE2SCEDYN,Heber 2,Heber Solar Facility,28.0,10.0
+WILLMS_6_ARBBM1,Abel Road Bioenergy,Abel Road Bioenergy (CAISO),3.0,3.0
+ETIWND_2_CHMPNE,Champagne,Champagne Solar PV,1.0,1.23
+HNTGBH_2_PL1X3,Huntington Beach Energy,Huntington Beach Energy Project,673.8,696.0
+BREGGO_6_DEGRSL,Desert Green Solar Farm,Desert Green Solar Farm LLC,6.3,3.5
+SUNCAT_2_A1ABT1,Arlington Solar Unit 1A BESS,Arlington Solar Unit 1 BESS,47.0,110.0
+SRINTL_6_UNIT,SRI INTERNATIONAL,SRI International Cogen Project,6.9,6.0
+VERNON_6_MALBRG,Malburg Generating Station,Malburg Power Plant,139.0,158.8
+CORONS_6_CLRWTR,Clearwater Power Plant,Clearwater,28.0,49.0
+WDLEAF_7_UNIT 1,WOODLEAF HYDRO,Woodleaf,60.0,55.0
+MRGT_6_MEF2,Miramar Energy Facility II,Miramar Energy Facility 1 & 2,44.0,95.0
+DRACKR_2_SOLAR2,Dracker Solar Unit 2,Dracker Solar Unit 2 BESS,125.0,115.0
+FORKBU_6_UNIT,Forks of Butte Hydro,Forks of Butte Hydro Project,14.4,13.3
+SOUTH_2_UNIT,SOUTH HYDRO,South,7.1,6.75
+KNTSTH_6_WALSR1,Westlands Almond,Westlands Almond (CAISO),19.88,20.0
+GASKW1_2_GW2SR2,Gaskell West 2b,Gaskell West 1,29.0,20.0
+WHITEW_5_WWRSR1,White Wing Ranch Solar,White Wing Ranch Solar (CAISO) (AZ),179.0,179.0
+SISPRG_2_DS3SR4,Daggett Solar 3 e PV,Daggett Solar 1 BESS,17.0,113.5
+WAUKNA_1_SOLAR,Corcoran Solar,Corcoran 3 Solar,20.0,20.0
+MIDWYS_2_MIDSL1,Midway Solar Farm,Midway Solar Farm I,49.9,49.9
+POLRIS_2_ASRSR1,Antelope Solar 2 Raceway,Antelope Solar 2 Raceway BESS,125.0,80.0
+ANAHM_2_CANYN4,CANYON POWER PLANT UNIT 4,Canyon Power Plant,49.8,200.48
+WLDWD_1_SOLAR2,Wildwood Solar 2,Wildwood Solar II,15.0,15.0
+FLOWD_2_WIND1,Cameron Ridge 2,Cameron Ridge,11.9,59.67
+CRELMN_6_RAMON2,Ramona 2,Ramona Solar Energy Facility,5.0,4.9
+GLDTWN_6_SOLAR,Rio Grande,RE Rio Grande,5.0,5.0
+WHITEW_5_WWAUXL1,White Wing Ranch Solar,White Wing Ranch Solar (CAISO) (AZ),5.0,179.0
+WHEATL_6_LNDFIL,"G2 ENERGY, OSTROM ROAD LLC",Ostrom Road,3.55,3.55
+KOLA_2_KLBBT2,Kola BESS 2,Kola,125.0,400.0
+DRACKR_2_SOLAR1,Dracker Solar Unit 1,Dracker Solar Unit 2 BESS,110.0,115.0
+ALMEGT_1_UNIT 1,ALAMEDA GT UNIT 1,Alameda,25.0,49.9
+ALTA4A_2_CPCW1,Alta Wind 1,Alta I Wind Energy Center,150.0,150.0
+ASTORA_2_SOLAR1,Astoria 1,RE Astoria,100.0,100.0
+BIGCRK_2_EXESWD,BIG CREEK HYDRO PROJECT PSP,Big Creek 3,820.0,177.0
+CARLS1_2_CARCT1,Carlsbad 1,Carlsbad Energy Center,422.0,525.0
+COCOPP_2_CTG2,Marsh Landing 2,Marsh Landing Generating Station,202.7,828.0
+COCOPP_2_CTG4,Marsh Landing 4,Marsh Landing Generating Station,204.29,828.0
+DELTA_2_PL1X4,DELTA ENERGY CENTER AGGREGATE,Delta Energy Center,880.0,860.2
+EASTWD_7_UNIT,EASTWOOD PUMP-GEN,Eastwood (Pumped Storage),200.0,199.0
+ELECTR_7_PL1X3,ELECTRA PH UNIT 1 & 2 AGGREGATE,Electra,93.0,99.0
+ESCNDO_6_EB3BT3,Escondido BESS 3,Escondido Energy Storage,10.0,30.0
+HELMPG_7_UNIT 3,HELMS PUMP-GEN UNIT 3,Helms (Pumped Storage),404.0,1212.0
+LGHTHP_6_ICEGEN,CARSON COGENERATION,Carson Cogeneration Company,48.0,60.0
+MSTANG_2_SOLAR3,Mustang 3,RE Mustang 3,40.0,40.0
+MTNPOS_1_UNIT,MT.POSO COGENERATION CO.,Mt. Poso Cogeneration,46.64,44.0
+PIT6_7_UNIT 2,PIT PH 6 UNIT 2,Pit #1,40.0,63.0
+POEPH_7_UNIT 2,POE HYDRO UNIT 2,Poe,68.5,120.0
+RCKCRK_7_UNIT 1,ROCK CREEK HYDRO UNIT 1,Rock Creek L.P.,57.0,3.6
+SBERDO_2_SNTANA,SANTA ANA PSP,Santa Ana 1,6.95,3.2
+SENTNL_2_CTG1,Sentinel Unit 1,Sentinel Energy Center,107.68,800.0
+SENTNL_2_CTG3,Sentinel Unit 3,Sentinel Energy Center,105.69,800.0
+SMUDGO_7_UNIT 1,SONOMA POWER PLANT,Sonoma #3,64.8,78.0
+SUMWHT_6_SWSSR1,Summer Wheat Solar Farm,Summer Wheat,18.5,18.5
+SUNSET_2_UNITS,MIDWAY SUNSET COGENERATION PLANT,Midway-Sunset Cogeneration,248.0,234.0
+SYCAMR_2_UNIT 3,Sycamore Cogeneration Unit 3,Sycamore Cogeneration Co,74.0,300.0
+USWND2_1_WIND1,Golden Hills A,Golden Hills,42.96,85.92
+USWND2_1_WIND2,Golden Hills B,Golden Hills,42.96,85.92
+USWND2_1_WIND3,Golden Hills C,Golden Hills,46.0,85.92
+VALTNE_2_TSASR1,Tropico Solar Big Beau A,Tropico Solar Big Beau B,58.0,40.0
+OBERON_5_O1SSX2,Oberon 1A Solar,Oberon 1 BESS,150.0,125.0
+SYCAMR_2_UNIT 2,Sycamore Cogeneration Unit 2,Sycamore Cogeneration Co,76.0,300.0
+TUMBWD_2_WISBT4,Willow Springs Solar 4,Willow Springs Solar,74.97,108.0
+PROXSR_2_PROSR1,Proxima Solar,Proxima Solar BESS,120.0,162.0
+MTWIND_1_MVPWD1,Mountain View Power Project I Repower,Mountain View Repower,66.6,66.6
+SCARLT_2_SS2SR1,Scarlet Solar 2 PV,Scarlet Solar II,200.0,200.0
+HENRTA_6_ELCTG1,ELECTROLYTE UNIT 1,Electrolyte,50.0,109.58
+SLATE_2_SLASR4,SLATE_4,Slate,63.0,140.3
+CHARMN_2_PGONG1,PROCTER  AND  GAMBLE OXNARD I,Procter & Gamble - Oxnard,19.87,1.0
+SCARLT_2_SSBBT1,Scarlet Solar CA 1B,Scarlet Solar CA,30.0,40.0
+GILRPP_1_PL3X4,"GILROY ENERGY CENTER, UNIT #3",Gilroy Cogen Plant,46.2,123.4
+RDWAY_1_SCKSR1,Sheep Creek,Sheep Creek (CAISO),3.0,3.0
+PIT1_7_UNIT 1,PIT PH 1 UNIT 1,Pit #1,32.0,63.0
+RTEDDY_2_RWSBT2,Rosamond West Solar Central BESS A2,Rosamond West Solar Central BESS,30.0,147.0
+SISPRG_2_DS3BT3,Daggett Solar 3 cd BESS,Daggett Solar 1 BESS,12.5,113.5
+DRACKR_2_D4SR4B,Dracker Solar Unit 4B,Dracker Solar Unit 1 BESS,62.5,63.0
+ROMOLA_5_MPBBT3,Menifee Power Bank 3,Menifee Power Bank,50.0,680.0
+FORBST_7_UNIT 1,FORBESTOWN HYDRO,Forbestown,37.5,39.7
+STOILS_1_UNITS,Chevron Richmond Refinery,Chevron Richmond Refinery Cogeneration,56.2,183.53
+MRLSDS_6_SOLAR1,Morelos Solar,Morelos Solar Facility,15.0,15.0
+SISPRG_2_DS3SR1,Daggett Solar 3 a PV,Daggett 2 a BESS,123.0,131.0
+WAUKNA_1_SOLAR2,Corcoran 2,Corcoran 3 Solar,19.75,20.0
+ELSEGN_2_UN1011,El Segundo Energy Center 5/6,El Segundo Energy Center,274.31,526.0
+CMBLND_2_DS2SR3,Daggett 2 c PV,Daggett Solar 1 BESS,52.0,113.5
+DIABLO_7_UNIT 2,Diablo Canyon Unit 2,Diablo Canyon,1150.0,2323.0
+LTBEAR_1_LB4SR5,Little Bear 4 Solar 5,Little Bear Solar 4,50.0,50.0
+SMRCOS_6_LNDFIL,San Marcos Energy,San Marcos,1.5,1.8
+GRDISL_1_RVSSR1,Rio Vista Solar,Rio Vista Solar (CAISO),2.73,2.73
+CALFTS_2_CFSSR1,California Flats Solar South,California Flats North,150.0,130.0
+LUNAVL_2_LVSSR2,Luna Valley Solar 2,"Luna Valley Solar I, LLC",2.0,200.0
+SCARLT_2_SSBSR1,Scarlet Solar CA 1B PV,Scarlet Solar 2 BESS,100.0,150.0
+CAMLOT_2_SOLAR2,Columbia Two,Columbia Two  LLC,15.0,15.0
+ROMOLA_5_MPBBT5,Menifee Power Bank 5,Menifee Power Bank,60.0,680.0
+AZALEA_6_AZASR1,Azalea,Azalea (CAISO),60.0,60.0
+DOSPAL_1_DPSSR1,Dos Palos Clean Power,Dos Palos Clean Power (CAISO),3.0,3.0
+GWFPWR_1_LDCTG1,LEAD UNIT 1,Lead BESS 2,55.3,32.0
+ORTGA_6_ME1SL1,Merced 1,Merced 1 (CAISO),3.0,3.0
+ALAMIT_7_UNIT 3,ALAMITOS GEN STA. UNIT 3,Alamitos Energy Storage,326.76,100.45
+ALMEGT_1_UNIT 2,ALAMEDA GT UNIT 2,Alameda,25.0,49.9
+ALTA6B_2_WIND11,Alta Wind 11,Alta XI Wind Energy Center,88.15,89.65
+BLACK_7_UNIT 1,JAMES B. BLACK 1,James B Black,85.0,172.0
+BRDSLD_2_HIWIND,High Winds Energy Center,High Winds,162.0,162.0
+BUTTVL_7_UNIT 1,BUTT VALLEY HYDRO,Butt Valley,39.5,40.0
+CAPWD_1_QF,Edom Hills Wind Farm,"Edom Hills Project 1, LLC",19.55,20.0
+CHILLS_7_UNITA1,Sycamore Energy 2,Sycamore Cogeneration Co,2.25,300.0
+GENESI_2_STG,Genesis Station,Genesis Solar Energy Project,250.0,250.0
+GILROY_1_UNIT,GILROY COGEN AGGREGATE,Gilroy Cogen Plant,120.0,123.4
+GUERNS_6_VH2BM1,Hanford Digester Genset 2,Hanford Digester Genset 2 (CAISO),1.0,1.02
+HARDWK_6_STWBM1,Still Water Ranch Dairy,Still Water Ranch Dairy (CAISO),1.0,1.0
+HELMPG_7_UNIT 2,HELMS PUMP-GEN UNIT 2,Helms (Pumped Storage),407.0,1212.0
+HUMBPP_1_UNITS3,Humboldt Bay Generating Station 3,Humboldt Bay,65.08,167.0
+JAWBNE_2_NSRWND,North Sky River Wind Project,"North Sky River, LLC",160.0,162.0
+LAPLMA_2_UNIT 2,La Paloma Generating Plant Unit #2,La Paloma Generating,266.0,1200.0
+MONTPH_7_UNITS,MONTICELLO HYDRO AGGREGATE,Monticello,12.5,11.5
+MSTANG_2_SOLAR4,Mustang 4,RE Mustang,30.0,30.0
+OAK C_7_UNIT 3,OAKLAND STATION C GT UNIT 3,Oakland Power Plant,55.0,223.5
+PIT6_7_UNIT 1,PIT PH 6 UNIT 1,Pit #1,39.0,63.0
+PLMSSR_6_HISIER,High Sierra Cogeneration Aggregate,High Sierra Cogeneration Power Plant,6.0,6.0
+RECTOR_2_KAWEAH,KAWEAH PH 2 & 3 PSP AGGREGATE,Kaweah 3,6.55,4.8
+SALTSP_7_UNITS,SALT SPRINGS HYDRO AGGREGATE,Salt Springs,46.0,46.0
+SBERDO_2_PSP4,Mountainview Gen Sta. Unit 4,Mountainview Generating Station,555.0,1110.0
+SENTNL_2_CTG4,Sentinel Unit 4,Sentinel Energy Center,106.55,800.0
+SENTNL_2_CTG7,Sentinel Unit 7,Sentinel Energy Center,106.73,800.0
+SYCAMR_2_UNIT 4,Sycamore Cogeneration Unit 4,Sycamore Cogeneration Co,76.0,300.0
+VOLTA_2_UNIT 2,Volta Hydro Unit 2,Volta #2,1.0,1.0
+WSTWND_2_M89WD2,Mojave 89 Wind,Mojave 3-4-5,75.8,75.0
+CATLNA_2_SOLAR,Catalina Solar - Phases 1 and 2,Catalina Solar Phase I and II,110.0,110.0
+RCKCRK_7_UNIT 2,ROCK CREEK HYDRO UNIT 2,Rock Creek L.P.,56.9,3.6
+OBERON_5_O2SSR4,Oberon 2A Solar,Oberon 1 BESS,125.0,125.0
+OBERON_5_O2SSR5,Oberon 2B Solar,Oberon 1 BESS,125.0,125.0
+SUNCAT_2_A2ABT2,Arlington Solar Unit 2A BESS,Arlington Solar Unit 2 BESS,132.0,132.0
+OLDRV1_6_SOLAR,Old River One,Old River One LLC,20.0,20.0
+VISTRA_5_DALBT3,Dallas Energy Storage 3,Dallas Energy Storage,100.0,400.0
+STANTN_2_STAGT1,Stanton 1,Stanton Battery Energy Storage,49.65,68.8
+CENT40_1_C40SR1,CENTRAL 40,Central 40 (CAISO),40.0,40.0
+VALTNE_2_TRSBT1,Tropico Solar,Tropico,70.0,14.0
+STANTN_2_STAGT2,Stanton 2,Stanton Battery Energy Storage,49.65,68.8
+ALAMIT_2_PL1X3,Alamitos Energy Center Unit 7,Alamitos Energy Center,674.7,693.0
+BALCHS_7_UNIT 2,BALCH 2 PH UNIT 2,Balch #1,52.5,34.0
+BALCHS_7_UNIT 3,BALCH 2 PH UNIT 3,Balch #1,54.6,34.0
+YELPIN_2_YP2BT2,Yellow Pine 2 A BESS,Yellow Pine Solar II LLC (NV),53.0,65.0
+YELPIN_2_YP2BT3,Yellow Pine 2 B BESS,Yellow Pine Solar II LLC (NV),32.0,65.0
+CHARCA_1_NGLSR1,Nachtigall,Nachtigall (CAISO),4.62,4.63
+FMEADO_7_UNIT,FRENCH MEADOWS HYDRO,French Meadows,16.0,15.0
+PALSEL_6_PLSSR1,Paulsell Solar Energy Center PV,Paulsell Solar Energy Center BESS,20.0,15.0
+SBERDO_2_PSP3,Mountainview Gen Sta. Unit 3,Mountainview Generating Station,555.0,1110.0
+DRACKR_2_DS4SR4,Dracker Solar Unit 4A,Dracker Solar Unit 1 BESS,62.5,63.0
+DUTCH2_7_UNIT 1,DUTCH FLAT 2 PH,Dutch Flat 2,26.0,27.3
+GILRPP_1_PL1X2,GILROY ENERGY CENTER UNITS 1&2 AGGREGATE,Gilroy Cogen Plant,95.2,123.4
+ROMOLA_5_MPBBT4,Menifee Power Bank 4,Menifee Power Bank,110.0,680.0
+SISPRG_2_DS3BT4,Daggett Solar 3 e BESS,Daggett Solar 1 BESS,15.0,113.5
+ELSEGN_2_UN2021,El Segundo Energy Center 7/8,El Segundo Energy Center,271.74,526.0
+SLATE_2_SLASR5,Slate 5,Slate,26.0,140.3
+ARLNTN_2_ASUSR1,Arlington Solar Unit 1,Arlington Solar Unit 2 BESS,131.0,132.0
+YUBACT_1_SUNSWT,YUBA CITY COGEN,City of Yuba,49.97,1.0
+ULTPCH_1_UNIT 1,Pacific Ultrapower Chinese Station,Pacific Ultrapower Chinese,18.0,25.0
+TOPAZ_2_SOLAR,Topaz Solar Farms,Topaz Solar Farms LLC,550.0,550.0
+DSRTSL_2_SOLAR1,Desert Stateline,Desert Stateline Solar Facility,296.19,299.99
+ELDORO_7_UNIT 1,El Dorado Unit 1,El Dorado,11.0,20.0
+BRDSLD_2_SHILO1,Shiloh I Wind Project,"Shiloh III Wind Project, LLC",150.0,102.5
+MTWIND_1_UNIT 3,Mountain View Power Project III,Mountain View III,22.44,22.44
+GARLND_2_GASLRA,Garland A,Garland B BESS,20.0,88.0
+SUNSLR_1_SSVSR1,Sunshine Valley Solar 1,Sunshine Valley Solar 1 (CAISO) (NV),100.0,100.0
+YELPIN_2_YP2SR3,Yellow Pine 2 B PV,Yellow Pine Solar II LLC (NV),65.0,65.0
+SISPRG_2_DS3SR3,Daggett Solar 3 cd PV,Daggett Solar 1 BESS,50.0,113.5
+RTREE_2_WIND1,Rising Tree 1,Rising Tree Wind Farm I,79.2,79.2
+WALCRK_2_CTG1,Walnut Creek Energy Park Unit 1,Walnut Creek Energy Park,100.1,500.5
+DIXNLD_1_LNDFL,Zero Waste Energy,Zero Waste to Energy,1.6,1.6
+CAMLOT_2_SOLAR1,Camelot,Camelot  LLC,45.0,45.0
+GRZZLY_1_BERKLY,Berkeley Cogeneration,PE Berkeley Inc,26.35,26.35
+BURNEY_6_HCCTG1,HAT Creek Bioenergy,HAT Creek Bioenergy (CAISO),2.88,2.88
+LTBEAR_1_LB3SR3,Little Bear 3 Solar,Little Bear Solar 3,20.0,20.0
+CMBLND_2_DS2SR2,Daggett 2 b PV,Daggett Solar 1 BESS,65.0,113.5
+HENRTA_6_ACDSR3,Avenal Cutoff Dac Spring Solar,Avenal Cutoff Dac Spring Solar (CAISO),3.0,3.0
+PASTSR_2_PSESR1,Pastoria Solar,Pastoria Energy Facility,105.2,778.0
+ALTA3A_2_CPCE5,Alta Wind 5,Alta V Wind Energy Center,168.0,168.0
+BLACK_7_UNIT 2,JAMES B. BLACK 2,James B Black,84.1,172.0
+BUCKCK_7_PL1X2,BUCKS CREEK AGGREGATE,Bucks Creek,57.25,58.0
+DRUM_7_PL1X2,Drum PH 1 Units 1 & 2 Aggregate,Drum #2,26.0,49.5
+IVSLR2_2_SM2SR1,Silver Ridge Mount Signal 2,Silver Ridge Mount Signal 2 (CAISO),150.0,150.0
+LAPLMA_2_UNIT 1,La Paloma Generating Plant Unit #1,La Paloma Generating,267.0,1200.0
+MSTANG_2_SOLAR,Mustang,RE Mustang,30.0,30.0
+PIOPIC_2_CTG3,Pio Pico Unit 3,Pio Pico Energy Center,112.0,336.0
+PIT4_7_PL1X2,PIT PH 4 UNITS 1 & 2 AGGREGATE,Pit #4,95.0,95.0
+SENTNL_2_CTG8,Sentinel Unit 8,Sentinel Energy Center,106.85,800.0
+SPICER_1_UNITS,SPICER HYDRO UNITS 1-3 AGGREGATE,Spicer,6.0,6.0
+TAHOE_2_THOBT1,Tahoe 1,Tahoe,60.04,279.0
+TEHAPI_2_PW1WD1,Point Wind 1,Point Wind,47.49,64.5
+TEHAPI_2_WIND1,Wind Wall Monolith 1,Wind Wall Monolith I,19.85,19.85
+TVYVLY_6_KRSHY1,Kings River Syphon,Kings River Syphon (CAISO),1.3,1.3
+VESTAL_2_KERN,KERN RIVER PH 3 UNITS 1 & 2 AGGREGATE,Kern River 3,36.8,36.8
+PROXSR_2_PS1BT1,Proxima Solar BESS 1A,Proxima Solar BESS,40.0,162.0
+LVNGST_1_WTASR1,West Tambo Clean Power II,West Tambo Clean Power II (CAISO),2.0,2.0
+UNVRSY_1_UNIT 1,Berry Cogen 38 - Unit 1,Berry Cogen 21Z,38.0,5.7
+PROXSR_2_PS1BT2,Proxima Solar BESS 1B,Proxima Solar BESS,32.0,162.0
+VISTRA_5_DALBT2,Dallas Energy Storage 2,Dallas Energy Storage,100.0,400.0
+FILIPPI_2_QZSSRX,Quartzite Solar 8,Quartzite Solar 8 BESS,300.0,150.0
+ROLLIN_6_UNIT,ROLLINS HYDRO,Rollins,13.5,13.5
+DELSUR_6_SOLAR1,Summer Solar North,Summer North Solar 6.5,6.5,6.5
+SNCLRA_6_PROCGN,Procter and Gamble Oxnard 2,Procter & Gamble - Oxnard,47.9,1.0
+VACADX_1_UNITA1,CalPeak Power Vaca Dixon Unit 1,Vaca Dixon - CalPeak Power,51.91,49.9
+CENTPD_2_BMSSX2,Blythe Mesa Solar,Blythe Mesa Solar Project,223.6,223.6
+SUNCAT_2_A1BBT1,Arlington Solar Unit 1B BESS,Arlington Solar Unit 1 BESS,63.0,110.0
+OGROVE_6_PL1X2,Orange Grove Energy Center,Orange Grove Energy,96.0,100.0
+CNTNLA_2_SOLAR1,Centinela Solar Energy I,Centinela Solar Energy,125.0,172.6
+FRESHW_1_SOLAR1,Corcoran 3,Corcoran 3 Solar,20.0,20.0
+WALNUT_7_WCOVST,MM West Covina - ST Unit,MM West Covina LLC,6.5,6.8
+DRUM_7_PL3X4,Drum PH 1 Units 3 & 4 Aggregate,Drum #2,28.9,49.5
+CRELMN_6_RAMSR3,Ramona Solar Energy,Ramona Solar Energy Facility,4.32,4.9
+MENBIO_6_RENEW1,CalRENEW - 1(A),CalRENEW-1,5.0,5.0
+CAVLSR_2_RSOLAR,California Valley Solar Ranch-Phase A,California Valley Solar Ranch,210.0,250.0
+LOTUS_6_LSFSR1,Lotus Solar Farm,Lotus Solar Farm (CAISO),50.0,50.0
+WALCRK_2_CTG2,Walnut Creek Energy Park Unit 2,Walnut Creek Energy Park,100.1,500.5
+CAMPFW_7_FARWST,CAMP FAR WEST HYDRO,Camp Far West,6.8,6.8
+ALTWD_2_COAWD1,Coachella 1,Coachella,50.4,92.4
+RTREE_2_WIND3,Rising Tree 3,Rising Tree Wind Farm III,99.0,99.0
+HENRTA_6_SOLAR1,Lemoore 1,Lemoore PV 1 LLC,1.5,1.5
+MELRSE_6_MELBT2,Melrose BESS 2,Melrose BESS,10.0,20.0
+LUNAVL_2_LVSSR1,Luna Valley Solar,"Luna Valley Solar I, LLC",113.5,200.0
+YELPIN_2_YP2SR1,Yellow Pine 2,Yellow Pine Solar LLC (NV),125.0,125.0
+LCKHT1_2_LH1SR2,Lockhart Solar 2,Lockhart Solar 2 (CAISO),75.0,75.0
+RVSIDE_6_SPRING,SPRINGS GENERATION PROJECT AGGREGATE,Springs Generation Project,36.0,40.0
+WALCRK_2_CTG4,Walnut Creek Energy Park Unit 4,Walnut Creek Energy Park,100.1,500.5
+COPMTN_2_SOLAR1,Copper Mountain 48,Copper Mountain I (NV),48.0,58.0
+COTTLE_2_FRNKNH,Frankenheimer Power Plant,Frankenheimer,5.3,5.04
+RECTOR_2_VISSR1,Visalia CSG,Visalia CSG (CAISO),3.0,3.0
+CMBLND_2_DS2SR1,Daggett 2 a PV,Daggett Solar 1 BESS,65.0,113.5
+COPMT4_2_SOLAR4,Copper Mountain Solar 4,Copper Mountain Solar 4 (NV),92.0,93.6
+ORLND_6_HIGHLI,High Line Canal Hydro,Highline Canal,0.5,0.5
+RSMSLR_6_SOLAR2,Rosamond Two,RE Rosamond Two,20.0,20.0
+RVSIDE_6_SOLAR1,Tequesquite Landfill Solar Project,Tequesquite Landfill Solar PV Project,7.5,7.5
+ALAMIT_7_UNIT 4,ALAMITOS GEN STA. UNIT 4,Alamitos Energy Storage,334.43,100.45
+ALTA3A_2_CPCE4,Alta Wind 4,Alta IV Wind Energy Center,102.0,102.0
+ALTA4B_2_CPCW3,Alta Wind 3,Alta I Wind Energy Center,150.0,150.0
+CARLS2_1_CARCT1,Carlsbad 2,Carlsbad Energy Center,105.5,525.0
+COCOPP_2_CTG3,Marsh Landing 3,Marsh Landing Generating Station,208.96,828.0
+COWCRK_2_UNIT,Cow Creek Hydro,Cow Creek,2.0,1.44
+ESCNDO_6_EB1BT1,Escondido BESS 1,Escondido Energy Storage,10.0,30.0
+HARBGN_7_UNITS,HARBOR COGEN COMBINED CYCLE,Harbor Cogeneration Co,109.01,107.45
+HENRTA_6_UNITA2,GWF HENRIETTA PEAKER PLANT UNIT 2,Henrietta Peaker,49.42,98.0
+HIGHDS_2_H5SSR1,High 5 Solar,High 5 Solar BESS,100.0,50.0
+MRCHNT_2_PL1X3,Desert Star Energy Center,Desert Star Energy Center (NV),494.58,536.0
+PINFLT_7_UNITS,PINE FLAT HYDRO AGGREGATE,Pine Flat,198.51,165.0
+RECTOR_2_KAWH 1,KAWEAH PH 1 UNIT 1,Kaweah 2,2.25,1.8
+SENTNL_2_CTG6,Sentinel Unit 6,Sentinel Energy Center,105.0,800.0
+STANIS_7_UNIT 1,STANISLAUS HYDRO,Stanislaus,91.0,91.0
+TEHAPI_2_WIND2,Wind Wall Monolith 2,Wind Wall Monolith II,23.66,23.66
+VALTNE_2_TSASR2,Tropico Solar A,Tropico,70.0,14.0
+WESTPT_2_UNIT,West Point Hydro Plant,West Point,14.0,14.0
+WNDSTR_2_WIND,Windstar,"Windstar Energy, LLC",120.0,120.0
+DVLCYN_1_UNITS,DEVIL CANYON HYDRO UNITS 1-4 AGGREGATE,Devil Canyon,235.0,276.46
+MAGNLA_6_COLTON,Magnolia Power Project,Magnolia,12.0,387.6
+MOJAVE_1_SIPHON,MOJAVE SIPHON POWER PLANT,Mojave Siphon,14.36,32.79
+PEABDY_2_LNDFL1,Potrero Hills Energy Producers,Potrero Hills Energy Producers LLC,8.0,8.0
+BRDSLD_2_SHLO3B,Shiloh IV Wind Project,"Shiloh III Wind Project, LLC",100.0,102.5
+JOANEC_2_STABT2,Santa Ana Storage 2,Santa Ana 1,20.0,3.2
+SKERN_6_SOLAR1,South Kern Solar PV Plant,Kent South  LLC,20.0,20.0
+VISTRA_5_PLABT2,Plano Storage 2,Plano Storage,100.4,350.0
+ALHMBR_1_ALHSLR,SG Alhambra,Alhambra Solar Facility,50.0,50.0
+CLOVER_2_UNIT,Clover Creek,Clover Creek (CAISO),0.99,1.0
+VALTNE_2_TBBBT1,Tropico Solar Big Beau,Tropico Solar Big Beau B,58.0,40.0
+IVSLRP_2_SOLAR1,Silver Ridge Mount Signal,Silver Ridge Mount Signal 2 (CAISO),200.0,150.0
+ROMOLA_5_MPBBT2,Menifee Power Bank 2,Menifee Power Bank,230.0,680.0
+CMBLND_2_DS2BT3,Daggett 2 c BESS,Daggett Solar 1 BESS,46.0,113.5
+KNTSTH_6_SOLAR,Kent South,Kent South  LLC,20.0,20.0
+CARBOU_7_PL2X3,CARIBOU PH 1 UNIT 2 & 3 AGGREGATE,Caribou #1,49.0,73.8
+CHILLS_1_SYCENG,Sycamore Energy 1,Sycamore Cogeneration Co,1.5,300.0
+WISE_1_UNIT 1,Wise Hydro Unit 1,Wise,14.5,17.1
+DSFLWR_2_W9CSB1,Willy 9 Chap 1,Willy 9 Chap,102.0,88.0
+SPBURN_7_SNOWMT,Burney Creek Hydro,Burney Creek,3.0,3.0
+SLATE_2_SLASR3,SLATE_3,Slate,67.5,140.3
+LASSEN_6_UNITS,Honey Lake Power,HL Power Company (Honey Lake),30.0,35.5
+HAASPH_7_PL1X2,HAAS PH UNIT 1 & 2 AGGREGATE,Haas,144.0,144.0
+PLACVL_1_RCKCRE,Rock Creek Hydro,Rock Creek L.P.,5.0,3.6
+CORCAN_1_SOLAR2,Corcoran City,Corcoran 3 Solar,11.0,20.0
+PRIMM_2_SOLAR1,Silver State South,Silver State Power South (NV),250.0,250.0
+KINGCO_1_KINGBR,Kingsburg Cogen,Kingsburg Cogeneration,34.5,34.5
+VOYAGR_2_VOYWD4,Voyager Wind 4,"Voyager Wind IV, LLC",21.01,21.6
+YELPIN_2_YP2SR2,Yellow Pine 2 A PV,Yellow Pine Solar II LLC (NV),60.0,65.0
+MIRLOM_2_MLBBTB,Mira Loma BESS B,Mira Loma BESS A,10.0,20.0
+WALCRK_2_CTG3,Walnut Creek Energy Park Unit 3,Walnut Creek Energy Park,100.1,500.5
+CMBLND_2_DS2BT2,Daggett 2 b BESS,Daggett Solar 1 BESS,33.0,113.5
+DRUM_7_UNIT 5,DRUM PH 2 UNIT 5,Drum #2,50.0,49.5
+ADMEST_6_SOLAR,Adams East,Adams East  LLC,19.0,19.0
+CONTRL_1_POOLE,POOLE HYDRO PLANT 1,Poole,11.07,10.0
+DIABLO_7_UNIT 1,Diablo Canyon Unit 1,Diablo Canyon,1150.0,2323.0
+WESCN2_2_BDSBT2,Bateria Del Sur 2B,Bateria Del Sur,100.0,350.0
+GLDTWN_6_COLUM3,Columbia 3,RE Columbia 3,10.0,10.0
+BELLEF_2_BSFSX3,Bellefield Solar Farm,Bellefield Solar Farm BESS,500.0,500.0
+BEARDS_7_UNIT 1,Beardsley Hydro,Beardsley,11.5,11.7
+GYSRVL_7_WSPRNG,Warm Springs Hydro,Warm Springs,3.75,2.79
+WFRESN_1_SOLAR,Joya Del Sol,La Joya Del Sol,1.5,1.5
+DAIRLD_1_MD1SL1,Madera 1,Madera 1 (CAISO),1.5,1.5
+BLKCRK_2_SOLAR1,McCoy Station,McCoy Solar LLC,250.0,250.0
+MARTIN_1_SUNSET,Sunset Reservoir - North Basin,Sunset Reservoir North Basin Solar,4.5,4.5
+ALTA4B_2_CPCW2,Alta Wind 2,Alta I Wind Energy Center,150.0,150.0
+ALTA6E_2_WIND10,Alta Wind 10,Alta X Wind Energy Center,134.84,136.8
+ARCOGN_2_UNITS,WATSON COGENERATION,Watson Cogeneration Co,305.0,398.0
+BRDSLD_2_SHILO2,SHILOH WIND PROJECT 2,"Shiloh III Wind Project, LLC",150.0,102.5
+CAMCHE_1_PL1X3,"CAMANCHE UNITS  1, 2 &  3 AGGREGATE",Camanche,9.99,10.8
+GRIZLY_1_UNIT 1,GRIZZLY HYDRO,Grizzly,20.0,21.0
+HENRTA_6_UNITA1,GWF HENRIETTA PEAKER PLANT UNIT 1,Henrietta Peaker,49.98,98.0
+HIDSRT_2_UNITS,HIGH DESERT POWER PROJECT AGGREGATE,High Desert Power Project,850.0,854.9
+ORMOND_7_UNIT 2,ORMOND BEACH GEN STA. UNIT 2,Ormond Beach Generating Station,750.0,1612.8
+SENTNL_2_CTG2,Sentinel Unit 2,Sentinel Energy Center,104.19,800.0
+SENTNL_2_CTG5,Sentinel Unit 5,Sentinel Energy Center,107.52,800.0
+SYCAMR_2_UNIT 1,Sycamore Cogeneration Unit 1,Sycamore Cogeneration Co,74.0,300.0
+TAHOE_2_THOBT2,Tahoe 2,Tahoe,109.06,279.0
+TRNQLT_2_SOLAR,Tranquillity,Tranquillity LLC,200.0,200.0
+TUMBWD_2_WISBT3,Willow Springs Solar 3,Willow Springs Solar,50.0,108.0
+DSFLWR_2_W9CSB2,Willy 9 Chap 2,Willy 9 Chap,72.0,88.0
+MIDWD_2_WIND2,Coram Energy,Coram Energy LLC,3.0,15.0
+ARKANS_1_ARKSLR,SG Arkansas,Arkansas Solar Facility,50.0,50.0
+VISTRA_5_PLABT3,Plano Storage 3,Plano Storage,74.6,350.0
+TULARE_2_TFCBM1,LB Trigen Fuel Cell 1,LB Trigen Fuel Cell 1 (CAISO),2.8,2.8
+ANAHM_2_CANYN2,CANYON POWER PLANT UNIT 2,Canyon Power Plant,48.04,200.48
+SCARLT_2_SSABT1,Scarlet Solar CA 1A,Scarlet Solar CA,10.0,40.0
+VICPAS_2_VPSSR1,Victory Pass Solar,Victory Pass,200.0,200.0
+RTEDDY_2_RWSBT1,Rosamond West Solar Central BESS A1,Rosamond West Solar Central BESS,30.0,147.0
+COLVIL_7_PL1X2,COLLIERVILLE HYDRO UNIT 1 & 2 AGGREGATE,Collierville,246.86,253.0
+OBERON_5_O1SSR3,Oberon 1B Solar,Oberon 1 BESS,100.0,125.0
+VOYAGR_2_VOYWD3,Voyager Wind 3,"Voyager Wind III, LLC",42.45,43.2
+CHESTN_2_CHWSX2,Chestnut Westside PV,Chestnut Westside BESS,150.0,135.0
+HALSEY_6_UNIT,HALSEY HYDRO,Halsey,13.5,11.0
+OXBOW_6_DRUM,OXBOW HYDRO,Oxbow,5.8,6.0
+BLAST_1_WIND,Mountain View IV Wind,Mountain View IV,49.0,49.0
+SUNCAT_2_A2BSR2,Arlington Solar Unit 2B,Arlington Solar Unit 2 BESS,133.0,132.0
+BASICE_2_UNITS,King City Cogen,King City Cogen Plant,120.0,130.0
+SPAULD_6_UNIT 3,SPAULDING HYDRO PH 3 UNIT,Spaulding #3,6.5,6.61
+ARLNTN_2_AR1SR1,Arlington,Arlington Solar Unit 1 BESS,100.0,110.0
+GASKW1_2_GW5SR1,Gaskell West 5,Gaskell West 1,20.0,20.0
+TMPLTN_2_SOLAR,Vintner Solar,Vintner Solar Project,1.5,1.5
+SPRGVL_2_SUCCES,Success Power Plant,Success Power Project,1.4,1.4
+GASKW1_2_GW2SR1,Gaskell West 2a,Gaskell West 1,16.0,20.0
+MNDOTA_1_SOLAR1,North Star Solar 1,North Star Solar,60.0,61.6
+SISPRG_2_DS3SR2,Daggett Solar 3 b PV,Daggett Solar 1 BESS,110.0,113.5
+GRNLF2_1_UNIT,GREENLEAF II COGEN,Greenleaf 2  Inc.,49.2,50.0
+BLCKBT_2_STONEY,BLACK BUTTE HYDRO,Black Butte,6.2,6.4
+PEABDY_2_LNDFIL,G2 Energy Hay Road Power Plant,Hay Road,1.6,1.6
+HOLGAT_1_BORAX,"U.S. Borax, Unit 1",U S Borax Inc,48.2,42.0
+STRAUS_1_STRWD1,"Strauss Wind, LLC",Strauss Wind Project,95.25,95.25
+COPMTN_2_CM10,Copper Mountain 10,Copper Mountain I (NV),10.0,58.0
+SCARLT_2_SSASR1,Scarlet Solar CA 1A PV,Scarlet Solar 2 BESS,100.0,150.0
+SMPRIP_1_SMPSON,Ripon Cogeneration Unit 1,Ripon Cogeneration Facility,46.05,49.9
+LTBEAR_1_LB4SR4,Little Bear 4,Little Bear Solar 4,50.0,50.0
+DSRTHV_2_DH2SR2,Desert Harvest 2,Desert Harvest II LLC,70.0,70.0
+RETAKE_2_SS2SR5,Sanborn Solar 2 S5,Sanborn Solar 2,46.0,100.0
+RETAKE_2_SS2SR6,Sanborn Solar 2 S6,Sanborn Solar 2,102.0,100.0
+7STDRD_1_SOLAR1,Shafter Solar,Shafter Solar LLC,20.0,20.0
+AKINGS_6_AMESR1,American Kings Solar,American Kings,123.0,123.0
+COVERD_2_QFUNTS,Cove Hydroelectric Project,Cove Hydroelectric,5.5,5.0
+CRIMSN_2_CRMBT2,Crimson 2,Crimson,150.0,350.0
+DAIRLD_1_CR1BM1,Clapper Rail Plant 1,Clapper Rail Plant 1 (CAISO),2.0,2.0
+DSFLWR_2_WS2SR1,Willow Springs 2,Willow Springs Solar,100.0,108.0
+DUANE_1_PL1X3,DONALD VON RAESFELD POWER PROJECT,Donald Von Raesfeld Power Plant (DVR),147.8,147.0
+HNTGBH_7_UNIT 2,HUNTINGTON BEACH GEN STA. UNIT 2,Huntington Beach (AES),226.84,215.0
+LAPLMA_2_UNIT 3,La Paloma Generating Plant Unit #3,La Paloma Generating,266.0,1200.0
+LAPLMA_2_UNIT 4,"LA PALOMA GENERATING PLANT, UNIT #4",La Paloma Generating,267.0,1200.0
+LITLRK_6_SOLAR1,Lancaster Little Rock C,Lancaster Little Rock C Solar PV,5.0,5.0
+NAROW1_2_UNIT,NARROWS PH 1 UNIT,Narrows 1,12.0,12.0
+OAK C_7_UNIT 1,OAKLAND STATION C GT UNIT 1,Oakland Power Plant,55.0,223.5
+OAKWD_6_QF,Oak Creek,Oak Creek Wind Power,27.87,31.5
+PADUA_7_SDIMAS,San Dimas Wash Hydro,San Dimas Wash,1.05,1.05
+PNCHEG_2_PL1X4,PANOCHE ENERGY CENTER (Aggregated),Panoche Energy Center,417.0,400.0
+POEPH_7_UNIT 1,POE HYDRO UNIT 1,Poe,68.0,120.0
+RECTOR_2_QF,Kaweah Unit 1,Kaweah 3,20.09,4.8
+RTEDDY_2_RWSBT4,Rosamond West Solar Central BESS B,Rosamond West Solar Central BESS,30.0,147.0
+SBERDO_6_MILLCK,MILL CREEK PSP,Mill Creek 3,3.93,3.0
+SPAULD_6_UNIT12,SPAULDING HYDRO PH 1 & 2 AGGREGATE,Spaulding #1,11.4,7.04
+TULARE_2_TULBM1,Tulare BioMAT Fuel Cell,Tulare BioMAT Fuel Cell (CAISO),2.8,2.8
+USWPJR_2_UNITS,Vasco Wind,Vasco Wind Energy Center,78.2,78.2
+VOLTA_2_UNIT 1,VOLTA HYDRO UNIT 1,Volta #1,9.1,8.55
+POLRIS_2_ASESR1,Antelope Solar 2 Estrella,Antelope Solar 2 Estrella BESS,56.0,28.0
+WESCN2_2_BDSBT1,Bateria Del Sur 2A,Bateria Del Sur,119.0,350.0
+VISTRA_5_PLABT1,Plano Storage 1,Plano Storage,100.4,350.0
+EXCHEC_7_UNIT 1,EXCHEQUER HYDRO,Exchequer,94.5,94.5
+HENRTA_6_ELCTG2,ELECTROLYTE UNIT 2,Electrolyte,50.0,109.58
+ALAMO_6_UNIT,ALAMO POWER PLANT,Alamo,17.0,19.67
+ESCNDO_6_UNITB1,CalPeak Power Enterprise Unit 1,Enterprise - CalPeak Power,50.96,48.92
+SLYCRK_1_UNIT 1,SLY CREEK HYDRO,Sly Creek,13.0,13.2
+CROKET_7_UNIT,CROCKETT COGEN,Crockett Cogeneration Project,240.0,247.4
+PROXSR_2_PS2BT3,Proxima Solar BESS 2,Proxima Solar BESS,90.0,162.0
+JOANEC_2_ST3BT3,Santa Ana Storage 3,Santa Ana 1,40.0,3.2
+CARBOU_7_UNIT 1,CARIBOU PH 1 UNIT 1,Caribou #1,24.0,73.8
+RTEDDY_2_RWSBT3,Rosamond West Solar Central BESS A3,Rosamond West Solar Central BESS,45.0,147.0
+VOYAGR_2_VOYWD1,Voyager 1,"Voyager Wind II, LLC",128.91,128.7
+COLPIN_6_COLLNS,Collins Pine,Collins Pine Co Project,3.3,0.0
+VLCNTR_6_VCSLR2,Valley Center 2,Valley Center 1 & 2,5.0,7.5
+PNOCHE_1_UNITA1,CalPeak Power Panoche Unit 1,Panoche - CalPeak Power,52.3,49.62
+PBLOSM_2_SOLAR,PearBlossom,Pearblossom Solar,9.5,9.5
+GARLND_2_GASLR,Garland B,Garland Solar Facility,180.0,200.0
+CPVERD_2_SOLAR,Campo Verde Solar,Campo Verde Solar Project,139.0,197.0
+ATHOS_5_AP2X2,Athos Power Plant 2,Athos II,200.0,200.0
+DSRTHV_2_DH1SR1,Desert Harvest,Desert Harvest LLC,80.0,80.0
+GLDFGR_6_SOLAR1,Portal Ridge B,"Portal Ridge B, LLC",20.0,20.0
+GLDFGR_6_SOLAR2,Portal Ridge C,"Portal Ridge C, LLC",11.4,11.4
+WISE_1_UNIT 2,WISE HYDRO UNIT 2,Wise,3.2,17.1
+LUNAVL_2_LVSSR3,Luna Valley Solar 3,"Luna Valley Solar I, LLC",84.5,200.0
+JAVASR_1_JAVSR1,Java Solar,DG Java Solar,13.5,13.5
+PMPJCK_1_SOLAR1,Pumpjack Solar I,Pumpjack Solar 1 PV,20.0,20.0
+LGHTHP_2_DOCSR1,Dominguez Carson,Dominguez Carson (CAISO),0.96,1.0
+VOYAGR_2_VOYWD2,Voyager Wind 2,"Voyager Wind II, LLC",126.35,128.7
+CAVLSR_2_BSOLAR,California Valley Solar Ranch-Phase B,California Valley Solar Ranch,40.0,250.0
+SHAFTR_1_HWYSR1,Highway 43,Highway 43 Solar (CAISO),2.25,2.25
+GARNET_2_COAWD2,Coachella 2,Coachella,10.8,92.4
+GWFPWR_1_LDCTG2,LEAD UNIT 2,Lead BESS 2,55.3,32.0
+BUCKBL_2_PL1X3,Blythe Energy Center,Blythe Energy Project,493.63,537.0
+WHITNY_6_SOLAR,Whitney Point Solar,Whitney Point Solar LLC,20.0,20.0
+RSMSLR_6_SOLAR1,Rosamond One,RE Rosamond One,20.0,20.0

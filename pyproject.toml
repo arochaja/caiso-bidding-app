@@ -25,6 +25,9 @@ ignore = [
 # so the SQL-injection rule (S608) would only produce false positives here.
 # S608 stays ACTIVE for dashboard.py, where Streamlit inputs could reach SQL.
 "app/pipeline.py" = ["S608"]
+# spike_local.py is the same kind of trusted offline ETL, split out of pipeline.py
+# only because it is numpy/memmap heavy. Same reasoning, same exemption.
+"app/spike_local.py" = ["S608"]
 # Local automation (the Lever 2 review hook): intentionally invokes known tools
 # (git, claude) by name and POSTs to a validated Slack webhook URL. These are
 # trusted, developer-run scripts, not request handlers.

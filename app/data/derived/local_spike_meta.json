@@ -1,0 +1,123 @@
+{
+  "geo_coverage": {
+    "n_resources": 1396,
+    "n_placed": 895,
+    "pct_placed": 64.1,
+    "pct_mw_placed": 69.1,
+    "by_source": {
+      "unplaced": 501,
+      "plant_fuzzy": 494,
+      "plant_name": 312,
+      "node_prefix": 74,
+      "substation": 15
+    }
+  },
+  "markets": {
+    "DAM": {
+      "n_events": 414,
+      "n_plants": 99,
+      "n_plants_screened": 895,
+      "n_event_hours": 463,
+      "n_hours": 8760,
+      "pct_year": 5.29,
+      "prem_pctl": 95.0,
+      "min_lmp": 75.0,
+      "min_mw": 50.0,
+      "min_jump": 10.0,
+      "window_h": 48,
+      "pre_h": 72,
+      "near_k": 5,
+      "near_km": 100.0,
+      "gap_h": 6,
+      "months": {
+        "1": 31,
+        "2": 5,
+        "3": 20,
+        "4": 33,
+        "5": 7,
+        "6": 12,
+        "7": 34,
+        "8": 58,
+        "9": 168,
+        "10": 17,
+        "11": 10,
+        "12": 19
+      }
+    },
+    "RTM": {
+      "n_events": 511,
+      "n_plants": 149,
+      "n_plants_screened": 895,
+      "n_event_hours": 331,
+      "n_hours": 8760,
+      "pct_year": 3.78,
+      "prem_pctl": 99.0,
+      "min_lmp": 150.0,
+      "min_mw": 50.0,
+      "min_jump": 10.0,
+      "window_h": 48,
+      "pre_h": 72,
+      "near_k": 5,
+      "near_km": 100.0,
+      "gap_h": 6,
+      "months": {
+        "1": 20,
+        "2": 7,
+        "3": 35,
+        "4": 48,
+        "5": 23,
+        "6": 27,
+        "7": 40,
+        "8": 115,
+        "9": 127,
+        "10": 34,
+        "11": 15,
+        "12": 20
+      }
+    }
+  },
+  "curves": {
+    "price_grid": [
+      -150,
+      -25,
+      0,
+      10,
+      20,
+      25,
+      30,
+      35,
+      40,
+      50,
+      60,
+      75,
+      100,
+      150,
+      200,
+      250,
+      300,
+      400,
+      500,
+      700,
+      1000
+    ],
+    "min_cap_mw": 1.0,
+    "min_event_hours": 20,
+    "min_t": 3.0,
+    "min_dev": 0.5,
+    "n_plants": {
+      "DAM": 949,
+      "RTM": 1396
+    },
+    "event_scores": {
+      "DAM": 154495,
+      "RTM": 141553
+    },
+    "evsc_min_sd": 0.25,
+    "evsc_min_gap": 1.0,
+    "evsc_min_norm": 100,
+    "median_gap_pct": {
+      "DAM": 7.41,
+      "RTM": 1.09
+    }
+  }
+}
